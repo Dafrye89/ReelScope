@@ -1,0 +1,300 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#07111f" />
+    <meta name="description" content="Extract, inspect, revisit, and export exact frames from video." />
+    <title>ReelScope</title>
+    <link rel="icon" type="image/png" href="/assets/reelscope-icon-64.png" />
+    <link rel="stylesheet" href="/assets/reelscope.css" />
+  </head>
+  <body data-engine="{{ engine_label }}">
+    <div class="app-shell">
+      <header class="topbar">
+        <a class="brand" href="/" aria-label="ReelScope home">
+          <img src="/assets/reelscope-icon-64.png" alt="" />
+          <span>ReelScope</span>
+        </a>
+
+        <button class="project-chip" type="button" aria-label="Current workspace">
+          <span class="material-symbols-rounded" aria-hidden="true">folder</span>
+          <span>Local workspace</span>
+        </button>
+
+        <label class="search-box" for="jobSearch">
+          <span class="material-symbols-rounded" aria-hidden="true">search</span>
+          <input id="jobSearch" type="search" placeholder="Search extraction history" autocomplete="off" />
+          <kbd>Ctrl K</kbd>
+        </label>
+
+        <div class="top-actions">
+          <button class="icon-button mobile-only" id="historyToggle" type="button" aria-label="Show history">
+            <span class="material-symbols-rounded" aria-hidden="true">history</span>
+          </button>
+          <button class="icon-button" id="themeToggle" type="button" aria-label="Switch to light mode">
+            <span class="material-symbols-rounded theme-icon-dark" aria-hidden="true">light_mode</span>
+            <span class="material-symbols-rounded theme-icon-light" aria-hidden="true">dark_mode</span>
+          </button>
+          <button class="primary-button" id="importButton" type="button">
+            <span class="material-symbols-rounded" aria-hidden="true">upload</span>
+            <span>Import video</span>
+          </button>
+          <button class="icon-button mobile-only" id="inspectorToggle" type="button" aria-label="Show extraction settings">
+            <span class="material-symbols-rounded" aria-hidden="true">tune</span>
+          </button>
+        </div>
+      </header>
+
+      <div class="app-layout">
+        <nav class="icon-rail" aria-label="Primary navigation">
+          <button class="rail-button is-active" type="button" aria-label="Frame workspace" aria-current="page">
+            <span class="material-symbols-rounded" aria-hidden="true">video_library</span>
+          </button>
+          <button class="rail-button" id="railImport" type="button" aria-label="Import video">
+            <span class="material-symbols-rounded" aria-hidden="true">file_open</span>
+          </button>
+          <button class="rail-button" id="railHistory" type="button" aria-label="Extraction history">
+            <span class="material-symbols-rounded" aria-hidden="true">history</span>
+          </button>
+          <div class="rail-spacer"></div>
+          <button class="rail-button" id="railTheme" type="button" aria-label="Toggle color theme">
+            <span class="material-symbols-rounded" aria-hidden="true">settings</span>
+          </button>
+        </nav>
+
+        <aside class="history-panel" id="historyPanel" aria-label="Extraction history">
+          <div class="panel-heading">
+            <div>
+              <p class="eyebrow">Library</p>
+              <h2>Jobs</h2>
+            </div>
+            <button class="icon-button compact" id="newJobButton" type="button" aria-label="Import a new video">
+              <span class="material-symbols-rounded" aria-hidden="true">add</span>
+            </button>
+          </div>
+          <div class="history-summary">
+            <span id="historyCount">0 saved jobs</span>
+            <button class="text-button" id="refreshHistory" type="button">
+              <span class="material-symbols-rounded" aria-hidden="true">refresh</span>
+              Refresh
+            </button>
+          </div>
+          <div class="history-list" id="historyList" aria-live="polite"></div>
+          <div class="history-empty" id="historyEmpty">
+            <span class="material-symbols-rounded" aria-hidden="true">image</span>
+            <strong>No saved extractions yet</strong>
+            <span>Import a video to start your visual library.</span>
+          </div>
+          <div class="history-footer">
+            <div class="engine-status">
+              <span class="status-dot"></span>
+              <span>{{ engine_label }} engine</span>
+            </div>
+            <span>Max upload {{ max_upload_label }}</span>
+          </div>
+        </aside>
+
+        <main class="viewer-panel">
+          <header class="viewer-header">
+            <div class="viewer-title-block">
+              <p class="eyebrow" id="viewerEyebrow">Workspace</p>
+              <div class="viewer-title-row">
+                <h1 id="viewerTitle">Choose a video</h1>
+                <span class="state-badge" id="stateBadge">Ready</span>
+              </div>
+              <p class="viewer-meta" id="viewerMeta">Extract exact frames and keep every result ready to revisit.</p>
+            </div>
+            <div class="view-switcher" role="group" aria-label="View mode">
+              <button class="icon-button is-active" id="carouselViewButton" type="button" aria-label="Carousel view" aria-pressed="true">
+                <span class="material-symbols-rounded" aria-hidden="true">view_carousel</span>
+              </button>
+              <button class="icon-button" id="gridViewButton" type="button" aria-label="Grid view" aria-pressed="false">
+                <span class="material-symbols-rounded" aria-hidden="true">grid_view</span>
+              </button>
+            </div>
+          </header>
+
+          <section class="empty-state" id="emptyState">
+            <button class="drop-zone" id="dropZone" type="button">
+              <img src="/assets/reelscope-icon-256.png" alt="" />
+              <span class="drop-kicker">Start a new extraction</span>
+              <strong>Drop a video here</strong>
+              <span>or choose a file from your computer</span>
+              <span class="drop-action">
+                <span class="material-symbols-rounded" aria-hidden="true">upload</span>
+                Browse videos
+              </span>
+            </button>
+            <div class="empty-features" aria-label="ReelScope capabilities">
+              <span><span class="material-symbols-rounded" aria-hidden="true">view_carousel</span>Ratio-aware viewing</span>
+              <span><span class="material-symbols-rounded" aria-hidden="true">history</span>Persistent history</span>
+              <span><span class="material-symbols-rounded" aria-hidden="true">download</span>PNG and ZIP export</span>
+            </div>
+          </section>
+
+          <section class="carousel-view is-hidden" id="carouselView" aria-label="Frame carousel">
+            <div class="media-stage" id="mediaStage">
+              <button class="stage-arrow stage-arrow-left" id="previousFrame" type="button" aria-label="Previous frame">
+                <span class="material-symbols-rounded" aria-hidden="true">chevron_left</span>
+              </button>
+              <figure class="neighbor-frame" id="previousCard">
+                <img id="previousImage" alt="Previous extracted frame" />
+              </figure>
+              <figure class="primary-frame" id="primaryCard">
+                <img id="primaryImage" alt="Current extracted frame" />
+                <figcaption id="timestampPill">00:00:00.000</figcaption>
+              </figure>
+              <figure class="neighbor-frame" id="nextCard">
+                <img id="nextImage" alt="Next extracted frame" />
+              </figure>
+              <button class="stage-arrow stage-arrow-right" id="nextFrame" type="button" aria-label="Next frame">
+                <span class="material-symbols-rounded" aria-hidden="true">chevron_right</span>
+              </button>
+            </div>
+
+            <div class="timeline-block">
+              <div class="timeline-labels">
+                <span id="timelineStart">00:00:00</span>
+                <span id="timelineCurrent">Frame 1</span>
+                <span id="timelineEnd">00:00:00</span>
+              </div>
+              <input id="scrub" type="range" min="0" max="0" value="0" aria-label="Scrub extracted frames" />
+            </div>
+
+            <div class="filmstrip-shell">
+              <button class="filmstrip-arrow" id="filmstripPrevious" type="button" aria-label="Previous group of frames">
+                <span class="material-symbols-rounded" aria-hidden="true">chevron_left</span>
+              </button>
+              <div class="filmstrip" id="filmstrip" role="listbox" aria-label="Nearby frames"></div>
+              <button class="filmstrip-arrow" id="filmstripNext" type="button" aria-label="Next group of frames">
+                <span class="material-symbols-rounded" aria-hidden="true">chevron_right</span>
+              </button>
+            </div>
+
+            <div class="transport-bar">
+              <div class="transport-controls">
+                <button class="icon-button" id="firstFrame" type="button" aria-label="First frame">
+                  <span class="material-symbols-rounded" aria-hidden="true">skip_previous</span>
+                </button>
+                <button class="play-button" id="playFrames" type="button" aria-label="Play frames">
+                  <span class="material-symbols-rounded" aria-hidden="true">play_arrow</span>
+                </button>
+                <button class="icon-button" id="lastFrame" type="button" aria-label="Last frame">
+                  <span class="material-symbols-rounded" aria-hidden="true">skip_next</span>
+                </button>
+              </div>
+              <div class="frame-readout">
+                <strong id="frameReadout">0 / 0</strong>
+                <span id="filenameReadout">No frame selected</span>
+              </div>
+              <button class="icon-button" id="fullscreenFrame" type="button" aria-label="View current frame fullscreen">
+                <span class="material-symbols-rounded" aria-hidden="true">fullscreen</span>
+              </button>
+            </div>
+          </section>
+
+          <section class="grid-view is-hidden" id="gridView" aria-label="Frame grid">
+            <div class="frame-grid" id="frameGrid"></div>
+            <button class="secondary-button load-more is-hidden" id="loadMoreFrames" type="button">Load more frames</button>
+          </section>
+        </main>
+
+        <aside class="inspector-panel" id="inspectorPanel" aria-label="Extraction settings and exports">
+          <section class="inspector-section">
+            <div class="section-heading">
+              <div>
+                <p class="eyebrow">Source</p>
+                <h2 id="sourceName">New extraction</h2>
+              </div>
+              <span class="engine-chip">{{ engine_label }}</span>
+            </div>
+            <dl class="source-stats">
+              <div><dt>Dimensions</dt><dd id="sourceDimensions">—</dd></div>
+              <div><dt>Frames</dt><dd id="sourceFrameCount">—</dd></div>
+              <div><dt>Source FPS</dt><dd id="sourceFps">—</dd></div>
+              <div><dt>Extracted</dt><dd id="sourceDate">—</dd></div>
+            </dl>
+          </section>
+
+          <section class="inspector-section">
+            <div class="section-heading">
+              <div>
+                <p class="eyebrow">Extraction</p>
+                <h2>Settings</h2>
+              </div>
+            </div>
+            <label class="field-label" for="extractRate">Extract rate</label>
+            <select id="extractRate">
+              <option value="all" selected>Every frame</option>
+              <option value="10">10 fps</option>
+              <option value="5">5 fps</option>
+              <option value="2">2 fps</option>
+              <option value="1">1 fps</option>
+              <option value="0.5">0.5 fps</option>
+            </select>
+            <label class="field-label" for="imageExt">Image format</label>
+            <select id="imageExt">
+              <option value=".jpg" selected>JPG (fast)</option>
+              <option value=".png">PNG (lossless)</option>
+            </select>
+            <div class="info-callout">
+              <span class="material-symbols-rounded" aria-hidden="true">info</span>
+              <span>Choose settings before import. Existing results always retain their original format and timestamps.</span>
+            </div>
+          </section>
+
+          <section class="inspector-section">
+            <div class="section-heading">
+              <div>
+                <p class="eyebrow">Quick actions</p>
+                <h2>Export</h2>
+              </div>
+            </div>
+            <button class="secondary-button full-width" id="downloadCurrent" type="button" disabled>
+              <span class="material-symbols-rounded" aria-hidden="true">download</span>
+              Download current PNG
+            </button>
+            <button class="secondary-button full-width" id="downloadZip" type="button" disabled>
+              <span class="material-symbols-rounded" aria-hidden="true">archive</span>
+              Download all frames
+            </button>
+            <label class="field-label" for="zipSampleRate">ZIP sample rate</label>
+            <select id="zipSampleRate">
+              <option value="all" selected>All extracted frames</option>
+              <option value="10">10 fps</option>
+              <option value="5">5 fps</option>
+              <option value="2">2 fps</option>
+              <option value="1">1 fps</option>
+              <option value="0.5">0.5 fps</option>
+            </select>
+          </section>
+
+          <section class="inspector-section status-section" id="statusSection">
+            <div class="status-line">
+              <span class="status-dot"></span>
+              <strong id="statusText">Ready to import</strong>
+            </div>
+            <p id="statusDetail">Your completed extractions stay available in the Jobs library.</p>
+            <div class="progress-track is-hidden" id="progressTrack" aria-label="Extraction progress">
+              <span id="progressBar"></span>
+            </div>
+            <div class="progress-label is-hidden" id="progressLabel">0 / ?</div>
+          </section>
+        </aside>
+      </div>
+    </div>
+
+    <input id="fileInput" type="file" accept="video/*" hidden />
+    <div class="drawer-backdrop is-hidden" id="drawerBackdrop"></div>
+    <div class="toast-region" id="toastRegion" aria-live="polite" aria-atomic="true"></div>
+
+    <script>
+      window.REELSCOPE_CONFIG = {
+        engine: {{ engine_label|tojson }},
+        maxUpload: {{ max_upload_label|tojson }}
+      };
+    </script>
+    <script src="/assets/reelscope.js" defer></script>
+  </body>
+</html>

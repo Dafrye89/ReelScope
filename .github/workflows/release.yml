@@ -1,0 +1,23 @@
+name: Build Windows release
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: python -m venv .venv
+      - run: .\build_desktop.ps1
+      - run: Compress-Archive -Path .\dist\ReelScope\* -DestinationPath .\ReelScope-Windows-x64.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ReelScope-Windows-x64
+          path: ReelScope-Windows-x64.zip
