@@ -19,7 +19,7 @@
 
         <button class="project-chip" type="button" aria-label="Current workspace">
           <span class="material-symbols-rounded" aria-hidden="true">folder</span>
-          <span>Local workspace</span>
+          <span>{{ user.username }}'s workspace</span>
         </button>
 
         <label class="search-box" for="jobSearch">
@@ -40,6 +40,15 @@
             <span class="material-symbols-rounded" aria-hidden="true">upload</span>
             <span>Import video</span>
           </button>
+          <form class="account-form desktop-only" method="post" action="/logout">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}" />
+            <button class="account-chip" type="submit" aria-label="Log out {{ user.username }}" title="Log out">
+              <span class="material-symbols-rounded" aria-hidden="true">settings</span>
+              <span>{{ user.username }}</span>
+              {% if user.is_admin %}<span class="admin-tag">Admin</span>{% endif %}
+              <span class="material-symbols-rounded logout-icon" aria-hidden="true">chevron_right</span>
+            </button>
+          </form>
           <button class="icon-button mobile-only" id="inspectorToggle" type="button" aria-label="Show extraction settings">
             <span class="material-symbols-rounded" aria-hidden="true">tune</span>
           </button>
@@ -109,6 +118,9 @@
               <button class="icon-button is-active" id="carouselViewButton" type="button" aria-label="Carousel view" aria-pressed="true">
                 <span class="material-symbols-rounded" aria-hidden="true">view_carousel</span>
               </button>
+              <button class="icon-button" id="videoViewButton" type="button" aria-label="Original video" aria-pressed="false">
+                <span class="material-symbols-rounded" aria-hidden="true">play_arrow</span>
+              </button>
               <button class="icon-button" id="gridViewButton" type="button" aria-label="Grid view" aria-pressed="false">
                 <span class="material-symbols-rounded" aria-hidden="true">grid_view</span>
               </button>
@@ -151,6 +163,10 @@
               <button class="stage-arrow stage-arrow-right" id="nextFrame" type="button" aria-label="Next frame">
                 <span class="material-symbols-rounded" aria-hidden="true">chevron_right</span>
               </button>
+              <figure class="video-frame is-hidden" id="videoCard">
+                <video id="sourceVideo" controls playsinline preload="metadata"></video>
+                <figcaption><span class="material-symbols-rounded" aria-hidden="true">refresh</span><span id="videoSyncText">Frames follow video playback</span></figcaption>
+              </figure>
             </div>
 
             <div class="timeline-block">
@@ -201,6 +217,39 @@
         </main>
 
         <aside class="inspector-panel" id="inspectorPanel" aria-label="Extraction settings and exports">
+          <section class="inspector-section">
+            <div class="section-heading">
+              <div>
+                <p class="eyebrow">Local speech-to-text</p>
+                <h2>Transcription</h2>
+              </div>
+            </div>
+            <label class="field-label" for="transcriptionModel">Model</label>
+            <select id="transcriptionModel">
+              {% for model in transcription_models %}
+              <option value="{{ model.key }}" {% if model.key == 'whisper-turbo' %}selected{% endif %}>{{ model.label }}</option>
+              {% endfor %}
+            </select>
+            <p class="field-help" id="transcriptionModelHelp">Recommended multilingual balance of speed and accuracy.</p>
+            <label class="field-label" for="transcriptionLanguage">Language</label>
+            <select id="transcriptionLanguage">
+              <option value="auto" selected>Detect automatically</option>
+              <option value="en">English</option>
+            </select>
+            <button class="primary-button full-width transcribe-button" id="transcribeButton" type="button" disabled>
+              <span class="material-symbols-rounded" aria-hidden="true">video_library</span>
+              Generate SRT
+            </button>
+            <div class="transcription-status" id="transcriptionStatus" aria-live="polite">
+              <span class="status-dot"></span>
+              <span id="transcriptionStatusText">Choose a completed video to transcribe.</span>
+            </div>
+            <a class="secondary-button full-width is-hidden" id="downloadTranscript" href="#" download>
+              <span class="material-symbols-rounded" aria-hidden="true">download</span>
+              Download SRT
+            </a>
+          </section>
+
           <section class="inspector-section">
             <div class="section-heading">
               <div>
@@ -292,7 +341,10 @@
     <script>
       window.REELSCOPE_CONFIG = {
         engine: {{ engine_label|tojson }},
-        maxUpload: {{ max_upload_label|tojson }}
+        maxUpload: {{ max_upload_label|tojson }},
+        csrfToken: {{ csrf_token()|tojson }},
+        user: {{ user.as_dict()|tojson }},
+        transcriptionModels: {{ transcription_models|tojson }}
       };
     </script>
     <script src="/assets/reelscope.js" defer></script>

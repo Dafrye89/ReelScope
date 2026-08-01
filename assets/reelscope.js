@@ -1,7 +1,7 @@
 (() => {
   "use strict";
 
-  const config = window.REELSCOPE_CONFIG || { engine: "CPU", maxUpload: "Unlimited" };
+  const config = window.REELSCOPE_CONFIG || { engine: "CPU", maxUpload: "Unlimited", csrfToken: "" };
   const $ = (id) => document.getElementById(id);
 
   const elements = {
@@ -18,6 +18,7 @@
     carouselView: $("carouselView"),
     gridView: $("gridView"),
     carouselViewButton: $("carouselViewButton"),
+    videoViewButton: $("videoViewButton"),
     gridViewButton: $("gridViewButton"),
     frameGrid: $("frameGrid"),
     loadMoreFrames: $("loadMoreFrames"),
@@ -34,6 +35,9 @@
     nextCard: $("nextCard"),
     nextImage: $("nextImage"),
     nextFrame: $("nextFrame"),
+    videoCard: $("videoCard"),
+    sourceVideo: $("sourceVideo"),
+    videoSyncText: $("videoSyncText"),
     timestampPill: $("timestampPill"),
     scrub: $("scrub"),
     timelineStart: $("timelineStart"),
@@ -53,6 +57,13 @@
     zipSampleRate: $("zipSampleRate"),
     downloadCurrent: $("downloadCurrent"),
     downloadZip: $("downloadZip"),
+    transcriptionModel: $("transcriptionModel"),
+    transcriptionModelHelp: $("transcriptionModelHelp"),
+    transcriptionLanguage: $("transcriptionLanguage"),
+    transcribeButton: $("transcribeButton"),
+    transcriptionStatus: $("transcriptionStatus"),
+    transcriptionStatusText: $("transcriptionStatusText"),
+    downloadTranscript: $("downloadTranscript"),
     statusText: $("statusText"),
     statusDetail: $("statusDetail"),
     statusSection: $("statusSection"),
@@ -74,6 +85,7 @@
     searchTerm: "",
     polling: false,
     playTimer: null,
+    transcriptionTimer: null,
   };
 
   function icon(name) {
@@ -85,12 +97,23 @@
   }
 
   async function fetchJson(url, options = {}) {
-    const response = await fetch(url, { cache: "no-store", ...options });
+    const requestOptions = { cache: "no-store", credentials: "same-origin", ...options };
+    const method = String(requestOptions.method || "GET").toUpperCase();
+    const headers = new Headers(requestOptions.headers || {});
+    if (!["GET", "HEAD", "OPTIONS"].includes(method) && config.csrfToken) {
+      headers.set("X-CSRF-Token", config.csrfToken);
+    }
+    requestOptions.headers = headers;
+    const response = await fetch(url, requestOptions);
     let payload = {};
     try {
       payload = await response.json();
     } catch (_error) {
       payload = {};
+    }
+    if (response.status === 401) {
+      window.location.assign(`/login?next=${encodeURIComponent(window.location.pathname)}`);
+      throw new Error("Your session has expired.");
     }
     if (!response.ok) {
       throw new Error(payload.error || `Request failed (${response.status})`);
@@ -136,6 +159,30 @@
     const match = stem.match(/_(\d{2})-(\d{2})-(\d{2}\.\d{3})$/);
     if (!match) return null;
     return `${match[1]}:${match[2]}:${match[3]}`;
+  }
+
+  function frameSecondsFromFilename(filename) {
+    const timestamp = timestampFromFilename(filename);
+    if (!timestamp) return null;
+    const match = timestamp.match(/^(\d{2}):(\d{2}):(\d{2}\.\d{3})$/);
+    if (!match) return null;
+    return Number(match[1]) * 3600 + Number(match[2]) * 60 + Number(match[3]);
+  }
+
+  function nearestFrameIndex(seconds) {
+    if (!state.frames.length) return 0;
+    let low = 0;
+    let high = state.frames.length - 1;
+    while (low < high) {
+      const middle = Math.floor((low + high + 1) / 2);
+      const value = frameSecondsFromFilename(state.frames[middle]);
+      if (value === null || value > seconds) high = middle - 1;
+      else low = middle;
+    }
+    const next = Math.min(state.frames.length - 1, low + 1);
+    const lowTime = frameSecondsFromFilename(state.frames[low]) ?? 0;
+    const nextTime = frameSecondsFromFilename(state.frames[next]) ?? lowTime;
+    return Math.abs(nextTime - seconds) < Math.abs(seconds - lowTime) ? next : low;
   }
 
   function shortTimestamp(filename) {
@@ -399,13 +446,20 @@
     renderFilmstrip();
   }
 
-  function goToFrame(index) {
+  function goToFrame(index, { syncVideo = true } = {}) {
     if (!state.frames.length) return;
     state.index = Math.max(0, Math.min(Number(index) || 0, state.frames.length - 1));
     renderCurrentFrame();
+    if (syncVideo && state.viewMode === "video" && elements.sourceVideo.src) {
+      const seconds = frameSecondsFromFilename(state.frames[state.index]);
+      if (seconds !== null && Math.abs(elements.sourceVideo.currentTime - seconds) > 0.035) {
+        elements.sourceVideo.currentTime = seconds;
+      }
+    }
   }
 
   function stopPlayback() {
+    if (state.viewMode === "video" && !elements.sourceVideo.paused) elements.sourceVideo.pause();
     if (state.playTimer) window.clearInterval(state.playTimer);
     state.playTimer = null;
     elements.playFrames.replaceChildren(icon("play_arrow"));
@@ -413,6 +467,11 @@
   }
 
   function togglePlayback() {
+    if (state.viewMode === "video") {
+      if (elements.sourceVideo.paused) elements.sourceVideo.play().catch((error) => showToast(error.message, "error"));
+      else elements.sourceVideo.pause();
+      return;
+    }
     if (state.playTimer) {
       stopPlayback();
       return;
@@ -465,21 +524,110 @@
   function updateViewMode() {
     const hasFrames = state.frames.length > 0;
     elements.emptyState.classList.toggle("is-hidden", hasFrames);
-    elements.carouselView.classList.toggle("is-hidden", !hasFrames || state.viewMode !== "carousel");
+    elements.carouselView.classList.toggle("is-hidden", !hasFrames || !["carousel", "video"].includes(state.viewMode));
     elements.gridView.classList.toggle("is-hidden", !hasFrames || state.viewMode !== "grid");
     elements.carouselViewButton.classList.toggle("is-active", state.viewMode === "carousel");
+    elements.videoViewButton.classList.toggle("is-active", state.viewMode === "video");
     elements.gridViewButton.classList.toggle("is-active", state.viewMode === "grid");
     elements.carouselViewButton.setAttribute("aria-pressed", state.viewMode === "carousel" ? "true" : "false");
+    elements.videoViewButton.setAttribute("aria-pressed", state.viewMode === "video" ? "true" : "false");
     elements.gridViewButton.setAttribute("aria-pressed", state.viewMode === "grid" ? "true" : "false");
+    const videoMode = hasFrames && state.viewMode === "video" && state.currentJob?.video_available;
+    elements.mediaStage.classList.toggle("is-video-mode", Boolean(videoMode));
+    elements.videoCard.classList.toggle("is-hidden", !videoMode);
+    if (videoMode) {
+      const expectedUrl = state.currentJob.video_url;
+      if (elements.sourceVideo.getAttribute("src") !== expectedUrl) {
+        elements.sourceVideo.src = expectedUrl;
+        elements.sourceVideo.load();
+      }
+      const seconds = frameSecondsFromFilename(state.frames[state.index]);
+      if (seconds !== null && elements.sourceVideo.readyState >= 1) elements.sourceVideo.currentTime = seconds;
+    } else if (!elements.sourceVideo.paused) {
+      elements.sourceVideo.pause();
+    }
     if (hasFrames && state.viewMode === "grid") renderGrid();
+    if (hasFrames && state.viewMode !== "grid") renderCurrentFrame();
+  }
+
+  function renderTranscription(status = { state: "idle" }) {
+    const transcriptionState = status?.state || "idle";
+    elements.transcriptionStatus.dataset.state = transcriptionState;
+    elements.transcribeButton.disabled = !state.currentJob?.video_available || state.currentJob?.state !== "done" || ["queued", "running"].includes(transcriptionState);
+    elements.downloadTranscript.classList.toggle("is-hidden", transcriptionState !== "done");
+    if (transcriptionState === "done") {
+      elements.downloadTranscript.href = status.download_url;
+      elements.transcriptionStatusText.textContent = `${status.model_label || "Local model"} created ${formatNumber(status.segments)} subtitle segments on ${String(status.device || "local").toUpperCase()}.`;
+      elements.transcribeButton.replaceChildren(icon("refresh"), document.createTextNode(" Regenerate SRT"));
+    } else if (transcriptionState === "running" || transcriptionState === "queued") {
+      const progress = Number(status.progress_seconds || 0);
+      elements.transcriptionStatusText.textContent = progress > 0 ? `Transcribing… ${progress.toFixed(1)} seconds processed.` : "Loading the local model and preparing audio…";
+      elements.transcribeButton.replaceChildren(icon("hourglass_top"), document.createTextNode(" Transcribing"));
+    } else if (transcriptionState === "error") {
+      elements.transcriptionStatusText.textContent = status.error || "Transcription failed.";
+      elements.transcribeButton.replaceChildren(icon("subtitles"), document.createTextNode(" Try again"));
+    } else {
+      elements.transcriptionStatusText.textContent = state.currentJob?.video_available ? "Generate a timestamped SRT locally. The first run downloads the selected model." : "Choose a completed video to transcribe.";
+      elements.transcribeButton.replaceChildren(icon("subtitles"), document.createTextNode(" Generate SRT"));
+    }
+  }
+
+  function stopTranscriptionPolling() {
+    if (state.transcriptionTimer) window.clearTimeout(state.transcriptionTimer);
+    state.transcriptionTimer = null;
+  }
+
+  async function pollTranscription(jobId) {
+    stopTranscriptionPolling();
+    try {
+      const status = await fetchJson(`/api/jobs/${encodeURIComponent(jobId)}/transcription`);
+      if (state.currentJobId !== jobId) return;
+      state.currentJob.transcription = status;
+      renderTranscription(status);
+      if (["queued", "running"].includes(status.state)) {
+        state.transcriptionTimer = window.setTimeout(() => pollTranscription(jobId), 1000);
+      } else if (status.state === "done") {
+        showToast("Your SRT transcript is ready.");
+      } else if (status.state === "error") {
+        showToast(status.error || "Transcription failed.", "error");
+      }
+    } catch (error) {
+      renderTranscription({ state: "error", error: error.message });
+    }
+  }
+
+  async function startTranscription() {
+    if (!state.currentJobId) return;
+    elements.transcribeButton.disabled = true;
+    try {
+      const status = await fetchJson(`/api/jobs/${encodeURIComponent(state.currentJobId)}/transcribe`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model: elements.transcriptionModel.value,
+          language: elements.transcriptionLanguage.value,
+        }),
+      });
+      state.currentJob.transcription = status;
+      renderTranscription(status);
+      pollTranscription(state.currentJobId);
+    } catch (error) {
+      renderTranscription({ state: "error", error: error.message });
+      showToast(error.message, "error");
+    }
   }
 
   function applyJob(job) {
+    stopTranscriptionPolling();
     state.currentJob = job;
     state.currentJobId = job.id;
     state.frames = Array.isArray(job.frames) ? job.frames : [];
     state.index = 0;
     state.gridLimit = 80;
+    state.viewMode = "carousel";
+    elements.sourceVideo.pause();
+    elements.sourceVideo.removeAttribute("src");
+    elements.sourceVideo.load();
 
     elements.viewerEyebrow.textContent = job.state === "done" ? "Saved extraction" : "Current extraction";
     elements.viewerTitle.textContent = job.filename || "Untitled video";
@@ -494,6 +642,7 @@
     const isDone = job.state === "done" && state.frames.length > 0;
     elements.downloadCurrent.disabled = !isDone;
     elements.downloadZip.disabled = !isDone;
+    elements.videoViewButton.disabled = !isDone || !job.video_available;
     if (job.image_ext) elements.imageExt.value = String(job.image_ext).toLowerCase() === ".png" ? ".png" : ".jpg";
     elements.extractRate.value = job.sample_fps ? String(job.sample_fps) : "all";
 
@@ -507,6 +656,7 @@
       setProgress(job.frames_written, job.expected_frames);
     }
     renderHistory();
+    renderTranscription(job.transcription);
     updateViewMode();
     if (isDone) renderCurrentFrame();
   }
@@ -540,6 +690,7 @@
 
   async function openJob(jobId) {
     stopPlayback();
+    stopTranscriptionPolling();
     state.currentJobId = jobId;
     renderHistory();
     try {
@@ -627,6 +778,11 @@
       state.viewMode = "grid";
       updateViewMode();
     });
+    elements.videoViewButton.addEventListener("click", () => {
+      if (!state.currentJob?.video_available) return;
+      state.viewMode = "video";
+      updateViewMode();
+    });
     elements.loadMoreFrames.addEventListener("click", () => {
       state.gridLimit = Math.min(800, state.gridLimit + 80);
       renderGrid();
@@ -642,10 +798,36 @@
     elements.scrub.addEventListener("input", () => goToFrame(Number(elements.scrub.value)));
     elements.primaryImage.addEventListener("load", updateFrameRatio);
     $("fullscreenFrame").addEventListener("click", () => {
-      if (elements.primaryImage.requestFullscreen) elements.primaryImage.requestFullscreen();
+      const target = state.viewMode === "video" ? elements.sourceVideo : elements.primaryImage;
+      if (target.requestFullscreen) target.requestFullscreen();
     });
     elements.downloadCurrent.addEventListener("click", downloadCurrent);
     elements.downloadZip.addEventListener("click", downloadZip);
+    elements.transcribeButton.addEventListener("click", startTranscription);
+    elements.transcriptionModel.addEventListener("change", () => {
+      const selected = (config.transcriptionModels || []).find((model) => model.key === elements.transcriptionModel.value);
+      elements.transcriptionModelHelp.textContent = selected?.description || "Local timestamped speech-to-text.";
+      elements.transcriptionLanguage.disabled = elements.transcriptionModel.value === "distil-large-v3.5";
+      if (elements.transcriptionLanguage.disabled) elements.transcriptionLanguage.value = "en";
+    });
+    elements.sourceVideo.addEventListener("timeupdate", () => {
+      if (state.viewMode !== "video" || !state.frames.length) return;
+      const index = nearestFrameIndex(elements.sourceVideo.currentTime);
+      if (index !== state.index) goToFrame(index, { syncVideo: false });
+      elements.videoSyncText.textContent = `Frame ${formatNumber(state.index + 1)} selected at ${timestampFromFilename(state.frames[state.index]) || "current time"}`;
+    });
+    elements.sourceVideo.addEventListener("play", () => {
+      elements.playFrames.replaceChildren(icon("pause"));
+      elements.playFrames.setAttribute("aria-label", "Pause original video");
+    });
+    elements.sourceVideo.addEventListener("pause", () => {
+      elements.playFrames.replaceChildren(icon("play_arrow"));
+      elements.playFrames.setAttribute("aria-label", "Play original video");
+    });
+    elements.sourceVideo.addEventListener("loadedmetadata", () => {
+      const seconds = frameSecondsFromFilename(state.frames[state.index]);
+      if (seconds !== null) elements.sourceVideo.currentTime = seconds;
+    });
 
     const dragTargets = [elements.dropZone, $("mediaStage")];
     dragTargets.forEach((target) => {
@@ -670,7 +852,7 @@
         elements.search.focus();
         return;
       }
-      if (isTyping || !state.frames.length || state.viewMode !== "carousel") return;
+      if (isTyping || !state.frames.length || state.viewMode === "grid") return;
       if (event.key === "ArrowLeft") goToFrame(state.index - 1);
       if (event.key === "ArrowRight") goToFrame(state.index + 1);
       if (event.key === "Home") goToFrame(0);
@@ -682,7 +864,7 @@
     });
 
     window.addEventListener("resize", () => {
-      if (state.frames.length && state.viewMode === "carousel") {
+      if (state.frames.length && state.viewMode !== "grid") {
         renderFilmstrip();
         updateFrameRatio();
       }

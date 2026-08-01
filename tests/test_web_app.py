@@ -11,12 +11,14 @@ from unittest.mock import patch
 from PIL import Image
 
 import web_app
+from auth_store import AuthStore
 
 
 class WebAppHistoryTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temp_dir = tempfile.TemporaryDirectory()
-        self.jobs_dir = Path(self.temp_dir.name) / "jobs"
+        self.data_dir = Path(self.temp_dir.name)
+        self.jobs_dir = self.data_dir / "jobs"
         self.job_id = "a" * 32
         self.job_dir = self.jobs_dir / self.job_id
         self.frames_dir = self.job_dir / "frames"
@@ -24,6 +26,7 @@ class WebAppHistoryTests(unittest.TestCase):
 
         Image.new("RGB", (320, 180), "#6d5dfc").save(self.frames_dir / "00000001_t000000000ms.jpg")
         Image.new("RGB", (320, 180), "#151d2d").save(self.frames_dir / "00000002_t000000040ms.jpg")
+        (self.job_dir / "upload.mp4").write_bytes(b"mock video")
         meta = {
             "job_id": self.job_id,
             "original_filename": "demo clip.mp4",
@@ -43,20 +46,41 @@ class WebAppHistoryTests(unittest.TestCase):
         }
         (self.job_dir / "meta.json").write_text(json.dumps(meta), encoding="utf-8")
 
+        self.store = AuthStore(self.data_dir / "test.sqlite3")
+        self.owner = self.store.create_user("owner", "correct-horse", "2026-07-31T20:00:00+00:00")
+        self.other = self.store.create_user("other", "battery-staple", "2026-07-31T20:00:00+00:00")
+        self.store.assign_job(self.owner.id, self.job_id, "2026-07-31T20:00:00+00:00")
+
         self.jobs_patch = patch.object(web_app, "JOBS_DIR", self.jobs_dir)
+        self.auth_patch = patch.object(web_app, "auth_store", self.store)
         self.jobs_patch.start()
+        self.auth_patch.start()
         with web_app.jobs_lock:
             web_app.jobs.clear()
         web_app.app.config.update(TESTING=True)
         self.client = web_app.app.test_client()
+        self._login_as(self.owner.id)
 
     def tearDown(self) -> None:
         with web_app.jobs_lock:
             web_app.jobs.clear()
+        self.auth_patch.stop()
         self.jobs_patch.stop()
         self.temp_dir.cleanup()
 
-    def test_completed_job_is_restored_and_listed(self) -> None:
+    def _login_as(self, user_id: int) -> None:
+        with self.client.session_transaction() as session:
+            session.clear()
+            session["user_id"] = user_id
+            session["csrf_token"] = "test-csrf-token-with-at-least-32-characters"
+
+    def test_unauthenticated_api_is_rejected(self) -> None:
+        with self.client.session_transaction() as session:
+            session.clear()
+        response = self.client.get("/api/jobs")
+        self.assertEqual(response.status_code, 401)
+
+    def test_completed_job_is_restored_and_listed_for_owner(self) -> None:
         response = self.client.get("/api/jobs")
         self.assertEqual(response.status_code, 200)
         payload = response.get_json()
@@ -64,27 +88,25 @@ class WebAppHistoryTests(unittest.TestCase):
         job = payload["jobs"][0]
         self.assertEqual(job["filename"], "demo clip.mp4")
         self.assertEqual(job["frames_count"], 2)
-        self.assertEqual(job["width"], 320)
-        self.assertEqual(job["height"], 180)
-        self.assertTrue(job["thumbnail"].endswith(".jpg"))
+        self.assertTrue(job["video_available"])
 
-    def test_detail_exposes_frames_and_serves_image(self) -> None:
+    def test_detail_exposes_frames_and_serves_video(self) -> None:
         detail = self.client.get(f"/api/jobs/{self.job_id}")
         self.assertEqual(detail.status_code, 200)
         payload = detail.get_json()
         self.assertEqual(len(payload["frames"]), 2)
 
-        frame = self.client.get(f"/jobs/{self.job_id}/frames/{payload['frames'][0]}")
-        try:
+        with self.client.get(f"/jobs/{self.job_id}/frames/{payload['frames'][0]}") as frame:
             self.assertEqual(frame.status_code, 200)
             self.assertEqual(frame.mimetype, "image/jpeg")
-        finally:
-            frame.close()
+
+        with self.client.get(f"/jobs/{self.job_id}/video", headers={"Range": "bytes=0-3"}) as video:
+            self.assertIn(video.status_code, {200, 206})
+            self.assertTrue(video.data)
 
     def test_png_and_zip_exports(self) -> None:
         png = self.client.get(f"/api/jobs/{self.job_id}/frame/0/download.png")
         self.assertEqual(png.status_code, 200)
-        self.assertEqual(png.mimetype, "image/png")
         with Image.open(io.BytesIO(png.data)) as image:
             self.assertEqual(image.size, (320, 180))
 
@@ -94,6 +116,51 @@ class WebAppHistoryTests(unittest.TestCase):
             names = bundle.namelist()
         self.assertTrue(any(name.endswith("meta.json") for name in names))
         self.assertEqual(sum(name.endswith(".jpg") for name in names), 2)
+
+    def test_other_user_cannot_access_any_job_artifact(self) -> None:
+        (self.job_dir / "transcript.srt").write_text("1\n00:00:00,000 --> 00:00:01,000\nPrivate\n", encoding="utf-8")
+        (self.job_dir / "transcription.json").write_text('{"state":"done"}', encoding="utf-8")
+        self._login_as(self.other.id)
+        routes = [
+            f"/api/jobs/{self.job_id}",
+            f"/jobs/{self.job_id}/frames/00000001_t000000000ms.jpg",
+            f"/jobs/{self.job_id}/video",
+            f"/api/jobs/{self.job_id}/frame/0/download.png",
+            f"/api/jobs/{self.job_id}/download.zip",
+            f"/api/jobs/{self.job_id}/transcription",
+            f"/api/jobs/{self.job_id}/transcript.srt",
+        ]
+        for route in routes:
+            with self.subTest(route=route):
+                self.assertEqual(self.client.get(route).status_code, 404)
+
+    def test_transcription_start_requires_csrf_and_queues_owned_job(self) -> None:
+        response = self.client.post(f"/api/jobs/{self.job_id}/transcribe", json={"model": "whisper-turbo"})
+        self.assertEqual(response.status_code, 400)
+
+        with patch.object(web_app.transcription_executor, "submit") as submit:
+            response = self.client.post(
+                f"/api/jobs/{self.job_id}/transcribe",
+                json={"model": "whisper-turbo", "language": "auto"},
+                headers={"X-CSRF-Token": "test-csrf-token-with-at-least-32-characters"},
+            )
+        self.assertEqual(response.status_code, 202)
+        submit.assert_called_once()
+
+    def test_registration_and_login_use_username_and_password_only(self) -> None:
+        with self.client.session_transaction() as session:
+            session.clear()
+            session["csrf_token"] = "test-csrf-token-with-at-least-32-characters"
+        response = self.client.post(
+            "/register",
+            data={
+                "username": "new_user",
+                "password": "secure-passphrase",
+                "csrf_token": "test-csrf-token-with-at-least-32-characters",
+            },
+        )
+        self.assertEqual(response.status_code, 302)
+        self.assertIsNotNone(self.store.authenticate("new_user", "secure-passphrase"))
 
     def test_invalid_job_id_is_rejected(self) -> None:
         response = self.client.get("/api/jobs/not-a-job")

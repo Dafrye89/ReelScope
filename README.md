@@ -2,7 +2,7 @@
 
 <img src="assets/reelscope-icon-256.png" alt="ReelScope icon" width="96" />
 
-ReelScope is a private, local-first video frame explorer for Windows. Drop in a video, extract exact frames with CPU or NVIDIA CUDA acceleration, scrub the result as a timeline, reopen past jobs, and export a single PNG or a sampled ZIP.
+ReelScope is a private, local-first video workspace for Windows. Drop in a video, extract exact frames with CPU or NVIDIA CUDA acceleration, scrub or play the source video, reopen past jobs, create timestamped SRT transcripts, and export a single PNG or sampled ZIP.
 
 ![ReelScope desktop workspace](docs/reelscope-preview.png)
 
@@ -11,6 +11,9 @@ ReelScope is a private, local-first video frame explorer for Windows. Drop in a 
 - Persistent project history with search and instant reopening
 - Ratio-aware frame stage for landscape, portrait, square, and ultrawide video
 - Filmstrip, grid, keyboard navigation, playback, and precise frame selection
+- Original-video playback synchronized to the selected extracted frame
+- Local CUDA speech-to-text with downloadable SRT subtitles
+- Simple username/password accounts with strict per-user video, frame, export, and transcript isolation
 - Light and dark themes
 - CPU extraction everywhere; CUDA acceleration when a compatible FFmpeg build and NVIDIA driver are available
 - Web UI plus a native Edge WebView2 desktop window with no background command prompt
@@ -44,6 +47,28 @@ This creates a `ReelScope` shortcut on the Windows desktop and launches it throu
 
 The packaged app is written to `dist\ReelScope\ReelScope.exe`. Packaged builds store their library under `%LOCALAPPDATA%\ReelScope\data`.
 
+## Accounts
+
+Registration asks only for a username and password. Passwords are stored as salted scrypt hashes, browser sessions use a persistent local signing key, and state-changing requests require a CSRF token. A user receives a not-found response when attempting to request another user's job or artifact.
+
+Create or reset an administrator without placing the password in shell history:
+
+```powershell
+Read-Host "Admin password" | .\.venv\Scripts\python.exe .\manage_users.py admin --password-stdin --claim-existing
+```
+
+Use `--data-dir web_data_cuda` for the CUDA web library, or the packaged data location for a standalone installation. `--claim-existing` assigns only currently unowned jobs to that administrator.
+
+## Local transcription
+
+ReelScope uses Faster-Whisper with three selectable local models. Model files download from Hugging Face on first use and remain in the selected ReelScope data directory.
+
+- **Whisper Large-v3 Turbo** — recommended multilingual speed/accuracy balance
+- **Distil-Whisper Large-v3.5** — fastest high-quality English choice
+- **Whisper Large-v3** — slower full-size accuracy choice
+
+The RTX 3090 path uses CUDA float16. If CUDA model loading is unavailable, ReelScope automatically retries with CPU int8. Transcript text and SRT files remain in the owning user's local job directory.
+
 ## CUDA requirements
 
 ReelScope checks the output of `ffmpeg -hwaccels` and selects CUDA only when the chosen build reports it. The CUDA launcher expects matching `ffmpeg.exe` and `ffprobe.exe` files in the Anaconda installation. The NVIDIA driver must support the decoder used by the source video.
@@ -68,9 +93,9 @@ py -3 -m venv .venv
 
 The UI is plain HTML, CSS, and JavaScript served by Flask. No external CDN is required at runtime.
 
-## Privacy and data
+## Privacy, data, and network use
 
-ReelScope has no account system, analytics, cloud upload, or telemetry. Browser mode binds to all local interfaces by default; if you do not want other devices on your network to reach it, use the desktop build or change the Flask host to `127.0.0.1`.
+ReelScope has no analytics, cloud upload, or telemetry. Browser mode binds to all local interfaces by default so registered users on the LAN can reach it. The built-in server is intended for a trusted local network; before exposing it to the public internet, place it behind an HTTPS reverse proxy and set `REELSCOPE_SECURE_COOKIES=1`.
 
 ## License
 

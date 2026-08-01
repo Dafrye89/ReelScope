@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#07111f" />
+    <title>Create account · ReelScope</title>
+    <link rel="icon" type="image/png" href="/assets/reelscope-icon-64.png" />
+    <link rel="stylesheet" href="/assets/reelscope.css" />
+  </head>
+  <body class="auth-page">
+    <main class="auth-shell">
+      <section class="auth-brand" aria-label="ReelScope">
+        <img src="/assets/reelscope-icon-256.png" alt="" />
+        <p class="eyebrow">Simple and private</p>
+        <h1>Your own video library</h1>
+        <p>Every upload, extracted frame, original video, export, and transcript stays isolated to the account that created it.</p>
+      </section>
+      <section class="auth-card">
+        <div>
+          <p class="eyebrow">Registration</p>
+          <h2>Create account</h2>
+          <p class="auth-intro">All you need is a username and password.</p>
+        </div>
+        {% if error %}<div class="auth-error" role="alert">{{ error }}</div>{% endif %}
+        <form method="post" class="auth-form">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}" />
+          <label for="username">Username</label>
+          <input id="username" name="username" value="{{ username }}" minlength="3" maxlength="32" pattern="[A-Za-z0-9_][A-Za-z0-9_.-]{2,31}" autocomplete="username" required autofocus />
+          <span class="input-help">3–32 characters: letters, numbers, dot, dash, or underscore.</span>
+          <label for="password">Password</label>
+          <input id="password" name="password" type="password" minlength="8" maxlength="128" autocomplete="new-password" required />
+          <span class="input-help">Use at least 8 characters.</span>
+          <button class="primary-button full-width auth-submit" type="submit">Create account</button>
+        </form>
+        <p class="auth-switch">Already registered? <a href="/login">Sign in</a></p>
+      </section>
+    </main>
+  </body>
+</html>

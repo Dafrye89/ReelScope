@@ -55,6 +55,7 @@ def _configure_engine() -> str:
             os.environ["VIDEO_FRAMES_FFMPEG"] = str(ffmpeg)
             os.environ["VIDEO_FRAMES_FFPROBE"] = str(ffprobe)
             os.environ["VIDEO_FRAMES_ENGINE"] = "CUDA"
+            os.environ["PATH"] = str(ffmpeg.parent) + os.pathsep + os.environ.get("PATH", "")
             return "CUDA"
 
     os.environ["VIDEO_FRAMES_ENGINE"] = "CPU"
