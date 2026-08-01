@@ -169,6 +169,28 @@
               </figure>
             </div>
 
+            <section class="transcript-workspace is-hidden" id="transcriptWorkspace" aria-label="Word-timed transcript">
+              <div class="transcript-heading">
+                <div>
+                  <span class="eyebrow">Speech timeline</span>
+                  <strong>Word-by-word transcript</strong>
+                </div>
+                <div class="transcript-heading-meta">
+                  <span id="transcriptCueCount">0 words</span>
+                  <span class="live-transcript-badge"><span class="status-dot"></span>Follows playback</span>
+                </div>
+              </div>
+              <p class="transcript-help">The spoken word highlights as the video plays. Select a timestamp to seek, or correct any word below.</p>
+              <div class="transcript-cues" id="transcriptCues" aria-label="Editable word-timed transcript"></div>
+              <div class="transcript-save-row">
+                <span id="transcriptSaveState">No unsaved changes</span>
+                <button class="secondary-button" id="saveTranscript" type="button" disabled>
+                  <span class="material-symbols-rounded" aria-hidden="true">check_circle</span>
+                  Save SRT edits
+                </button>
+              </div>
+            </section>
+
             <div class="timeline-block">
               <div class="timeline-labels">
                 <span id="timelineStart">00:00:00</span>
@@ -252,24 +274,6 @@
               <span class="material-symbols-rounded" aria-hidden="true">download</span>
               Download SRT
             </a>
-            <div class="transcript-workspace is-hidden" id="transcriptWorkspace">
-              <div class="transcript-heading">
-                <div>
-                  <strong>Live transcript</strong>
-                  <span id="transcriptCueCount">0 cues</span>
-                </div>
-                <span class="live-transcript-badge"><span class="status-dot"></span>Follows video</span>
-              </div>
-              <p class="field-help">The current cue highlights during playback. Click a cue to seek, or edit the text and save your corrections.</p>
-              <div class="transcript-cues" id="transcriptCues" aria-label="Editable transcript cues"></div>
-              <div class="transcript-save-row">
-                <span id="transcriptSaveState">No unsaved changes</span>
-                <button class="secondary-button" id="saveTranscript" type="button" disabled>
-                  <span class="material-symbols-rounded" aria-hidden="true">check_circle</span>
-                  Save edits
-                </button>
-              </div>
-            </div>
           </section>
 
           <section class="inspector-section">

@@ -219,7 +219,7 @@
     state.transcriptCueElements = [];
     state.activeTranscriptCue = -1;
     elements.transcriptCues.replaceChildren();
-    elements.transcriptCueCount.textContent = "0 cues";
+    elements.transcriptCueCount.textContent = "0 words";
     elements.transcriptWorkspace.classList.add("is-hidden");
     setTranscriptDirty(false);
   }
@@ -228,14 +228,13 @@
     if (!state.transcriptCues.length) return;
     const current = Number(seconds);
     let active = state.transcriptCues.findIndex((cue) => current >= Number(cue.start) && current < Number(cue.end));
-    if (active < 0 && current >= Number(state.transcriptCues[state.transcriptCues.length - 1].end)) active = state.transcriptCues.length - 1;
     if (active === state.activeTranscriptCue) return;
     if (state.activeTranscriptCue >= 0) state.transcriptCueElements[state.activeTranscriptCue]?.classList.remove("is-active");
     state.activeTranscriptCue = active;
     if (active < 0) return;
     const cueElement = state.transcriptCueElements[active];
     cueElement?.classList.add("is-active");
-    if (!(document.activeElement instanceof HTMLTextAreaElement)) cueElement?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+    if (!document.activeElement?.classList.contains("transcript-text")) cueElement?.scrollIntoView({ block: "nearest", behavior: "smooth" });
   }
 
   function seekToTranscriptCue(cue) {
@@ -254,7 +253,7 @@
     elements.transcriptCues.replaceChildren();
     state.transcriptCueElements = [];
     state.transcriptCues.forEach((cue, cueIndex) => {
-      const row = document.createElement("article");
+      const row = document.createElement("span");
       row.className = "transcript-cue";
       row.dataset.cueIndex = String(cueIndex);
       const time = document.createElement("button");
@@ -263,20 +262,24 @@
       time.textContent = formatCueTime(cue.start);
       time.setAttribute("aria-label", `Seek video to ${formatCueTime(cue.start)}`);
       time.addEventListener("click", () => seekToTranscriptCue(cue));
-      const textarea = document.createElement("textarea");
-      textarea.className = "transcript-text";
-      textarea.rows = 2;
-      textarea.value = cue.text;
-      textarea.setAttribute("aria-label", `Transcript cue ${cue.index}`);
-      textarea.addEventListener("input", () => {
-        cue.text = textarea.value;
+      const wordInput = document.createElement("input");
+      wordInput.className = "transcript-text";
+      wordInput.type = "text";
+      wordInput.value = cue.text;
+      wordInput.style.width = `${Math.min(34, Math.max(4, Array.from(cue.text).length + 1))}ch`;
+      wordInput.setAttribute("aria-label", `Transcript word ${cue.index}`);
+      wordInput.addEventListener("input", () => {
+        cue.text = wordInput.value;
+        wordInput.style.width = `${Math.min(34, Math.max(4, Array.from(wordInput.value).length + 1))}ch`;
         setTranscriptDirty(true);
       });
-      row.append(time, textarea);
+      row.append(time, wordInput);
       elements.transcriptCues.appendChild(row);
       state.transcriptCueElements.push(row);
     });
-    elements.transcriptCueCount.textContent = `${formatNumber(state.transcriptCues.length)} ${state.transcriptCues.length === 1 ? "cue" : "cues"}`;
+    const wordTimed = state.transcriptCues.every((cue) => !/\s/.test(String(cue.text).trim()));
+    const unit = wordTimed ? (state.transcriptCues.length === 1 ? "word" : "words") : (state.transcriptCues.length === 1 ? "cue" : "cues");
+    elements.transcriptCueCount.textContent = `${formatNumber(state.transcriptCues.length)} ${unit}`;
     elements.transcriptWorkspace.classList.toggle("is-hidden", state.transcriptCues.length === 0);
     setTranscriptDirty(false);
     const initialSeconds = state.viewMode === "video" ? elements.sourceVideo.currentTime : frameSecondsFromFilename(state.frames[state.index]);
@@ -311,7 +314,7 @@
         body: JSON.stringify({ cues: state.transcriptCues.map(({ index, text }) => ({ index, text })) }),
       });
       state.transcriptCues = payload.cues;
-      setTranscriptDirty(false);
+      renderTranscriptCues();
       showToast("Transcript corrections saved to the SRT.");
     } catch (error) {
       elements.saveTranscript.disabled = false;
@@ -694,7 +697,9 @@
     elements.downloadTranscript.classList.toggle("is-hidden", transcriptionState !== "done");
     if (transcriptionState === "done") {
       elements.downloadTranscript.href = status.download_url;
-      elements.transcriptionStatusText.textContent = `${status.model_label || "Local model"} created ${formatNumber(status.segments)} subtitle segments on ${String(status.device || "local").toUpperCase()}.`;
+      const resultCount = status.words ?? status.segments;
+      const resultUnit = status.words ? "timestamped words" : "subtitle cues";
+      elements.transcriptionStatusText.textContent = `${status.model_label || "Local model"} created ${formatNumber(resultCount)} ${resultUnit} on ${String(status.device || "local").toUpperCase()}.`;
       elements.transcribeButton.replaceChildren(icon("refresh"), document.createTextNode(" Regenerate SRT"));
       loadTranscript(state.currentJobId);
     } else if (transcriptionState === "running" || transcriptionState === "queued") {

@@ -106,6 +106,34 @@ def _load_model(model: TranscriptionModel, cache_dir: Path):
         raise RuntimeError(f"could not load {model.label}: {last_error}")
 
 
+def _word_cues(segment: object) -> list[tuple[float, float, str]]:
+    segment_start = float(getattr(segment, "start", 0.0) or 0.0)
+    segment_end = max(segment_start + 0.001, float(getattr(segment, "end", segment_start) or segment_start))
+    timed_words = list(getattr(segment, "words", None) or [])
+    cues: list[tuple[float, float, str]] = []
+    for word in timed_words:
+        text = str(getattr(word, "word", "")).strip()
+        if not text:
+            continue
+        start = float(getattr(word, "start", segment_start) or segment_start)
+        end = max(start + 0.001, float(getattr(word, "end", start) or start))
+        cues.append((start, end, text))
+    if cues:
+        return cues
+
+    # Word timestamps should normally be present. Keep the output word-level even
+    # when a backend omits them by distributing the segment duration evenly.
+    words = str(getattr(segment, "text", "")).strip().split()
+    if not words:
+        return []
+    duration = max(0.001, segment_end - segment_start)
+    step = duration / len(words)
+    return [
+        (segment_start + position * step, segment_start + (position + 1) * step, word)
+        for position, word in enumerate(words)
+    ]
+
+
 def transcribe_to_srt(
     media_path: Path,
     output_path: Path,
@@ -131,22 +159,25 @@ def transcribe_to_srt(
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     temporary = output_path.with_suffix(output_path.suffix + ".tmp")
-    count = 0
+    segment_count = 0
+    word_count = 0
     last_end = 0.0
     with temporary.open("w", encoding="utf-8", newline="\n") as handle:
         for segment in segments:
-            text = str(segment.text).strip()
-            if not text:
+            word_cues = _word_cues(segment)
+            if not word_cues:
                 continue
-            count += 1
-            start = float(segment.start)
-            end = max(start + 0.001, float(segment.end))
-            last_end = end
-            handle.write(f"{count}\n{_format_srt_timestamp(start)} --> {_format_srt_timestamp(end)}\n{text}\n\n")
+            segment_count += 1
+            for start, end, text in word_cues:
+                word_count += 1
+                last_end = end
+                handle.write(
+                    f"{word_count}\n{_format_srt_timestamp(start)} --> {_format_srt_timestamp(end)}\n{text}\n\n"
+                )
             if on_progress is not None:
-                on_progress(end)
+                on_progress(last_end)
     temporary.replace(output_path)
-    if count == 0:
+    if word_count == 0:
         raise RuntimeError("the model did not detect any speech")
 
     return {
@@ -156,5 +187,7 @@ def transcribe_to_srt(
         "language": str(getattr(info, "language", selected_language or "unknown")),
         "language_probability": float(getattr(info, "language_probability", 0.0) or 0.0),
         "duration_seconds": float(getattr(info, "duration", last_end) or last_end),
-        "segments": count,
+        "segments": segment_count,
+        "words": word_count,
+        "word_timestamps": True,
     }
