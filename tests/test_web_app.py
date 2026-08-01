@@ -117,6 +117,24 @@ class WebAppHistoryTests(unittest.TestCase):
         self.assertTrue(any(name.endswith("meta.json") for name in names))
         self.assertEqual(sum(name.endswith(".jpg") for name in names), 2)
 
+        selected = self.client.post(
+            f"/api/jobs/{self.job_id}/download-selected.zip",
+            json={"indices": [1]},
+            headers={"X-CSRF-Token": "test-csrf-token-with-at-least-32-characters"},
+        )
+        self.assertEqual(selected.status_code, 200)
+        with zipfile.ZipFile(io.BytesIO(selected.data)) as bundle:
+            selected_names = bundle.namelist()
+        self.assertEqual(len(selected_names), 1)
+        self.assertTrue(selected_names[0].endswith("00000002_t000000040ms.jpg"))
+
+        invalid_selection = self.client.post(
+            f"/api/jobs/{self.job_id}/download-selected.zip",
+            json={"indices": [99]},
+            headers={"X-CSRF-Token": "test-csrf-token-with-at-least-32-characters"},
+        )
+        self.assertEqual(invalid_selection.status_code, 400)
+
     def test_other_user_cannot_access_any_job_artifact(self) -> None:
         (self.job_dir / "transcript.srt").write_text("1\n00:00:00,000 --> 00:00:01,000\nPrivate\n", encoding="utf-8")
         (self.job_dir / "transcription.json").write_text('{"state":"done"}', encoding="utf-8")
@@ -134,6 +152,12 @@ class WebAppHistoryTests(unittest.TestCase):
         for route in routes:
             with self.subTest(route=route):
                 self.assertEqual(self.client.get(route).status_code, 404)
+        selected = self.client.post(
+            f"/api/jobs/{self.job_id}/download-selected.zip",
+            json={"indices": [0]},
+            headers={"X-CSRF-Token": "test-csrf-token-with-at-least-32-characters"},
+        )
+        self.assertEqual(selected.status_code, 404)
 
     def test_transcription_start_requires_csrf_and_queues_owned_job(self) -> None:
         response = self.client.post(f"/api/jobs/{self.job_id}/transcribe", json={"model": "whisper-turbo"})

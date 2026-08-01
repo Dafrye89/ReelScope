@@ -850,6 +850,45 @@ def download_all_zip(job_id: str):
     return send_file(zip_buf, mimetype="application/zip", as_attachment=True, download_name=zip_name)
 
 
+@app.post("/api/jobs/<job_id>/download-selected.zip")
+@login_required
+def download_selected_zip(job_id: str):
+    job = _owned_job(job_id)
+    if job is None:
+        return jsonify({"error": "job not found"}), 404
+    if job.state != "done":
+        return jsonify({"error": "job not ready"}), 400
+
+    payload = request.get_json(silent=True) or {}
+    requested = payload.get("indices")
+    if not isinstance(requested, list) or not requested:
+        return jsonify({"error": "select at least one frame"}), 400
+    if len(requested) > 1000:
+        return jsonify({"error": "select no more than 1,000 frames at a time"}), 400
+
+    frames = _list_frames(job_id)
+    selected_indices: list[int] = []
+    for value in requested:
+        if isinstance(value, bool) or not isinstance(value, int):
+            return jsonify({"error": "frame indices must be integers"}), 400
+        if value < 0 or value >= len(frames):
+            return jsonify({"error": "frame index out of range"}), 400
+        if value not in selected_indices:
+            selected_indices.append(value)
+    selected_indices.sort()
+
+    zip_buf = io.BytesIO()
+    base = Path(job.filename).stem if job.filename else job_id
+    with zipfile.ZipFile(zip_buf, "w", compression=zipfile.ZIP_DEFLATED) as bundle:
+        for index in selected_indices:
+            filename = frames[index]
+            bundle.write(_frames_dir(job_id) / filename, arcname=f"{base}/frames/{filename}")
+
+    zip_buf.seek(0)
+    zip_name = f"{base}_{len(selected_indices)}_selected_frames.zip"
+    return send_file(zip_buf, mimetype="application/zip", as_attachment=True, download_name=zip_name)
+
+
 @app.get("/api/transcription/models")
 @login_required
 def transcription_models():

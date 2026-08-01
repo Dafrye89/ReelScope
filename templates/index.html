@@ -185,6 +185,9 @@
               </figure>
               <figure class="primary-frame" id="primaryCard">
                 <img id="primaryImage" alt="Current extracted frame" />
+                <button class="media-overlay-button frame-download-overlay" id="downloadFrameOverlay" type="button" aria-label="Download current frame as PNG" disabled>
+                  <span class="material-symbols-rounded" aria-hidden="true">download</span>
+                </button>
                 <figcaption id="timestampPill">00:00:00.000</figcaption>
               </figure>
               <figure class="neighbor-frame" id="nextCard">
@@ -211,6 +214,10 @@
                     <span class="material-symbols-rounded" aria-hidden="true">content_copy</span>
                     <span class="copy-label">Copy</span>
                   </button>
+                  <a class="secondary-button compact-button is-hidden" id="downloadTranscriptOverlay" href="#" download aria-label="Download SRT transcript">
+                    <span class="material-symbols-rounded" aria-hidden="true">download</span>
+                    <span class="download-label">SRT</span>
+                  </a>
                   <button class="secondary-button compact-button" id="saveTranscript" type="button" disabled>
                     <span class="material-symbols-rounded" aria-hidden="true">check_circle</span>
                     <span class="save-label">Save</span>
@@ -266,6 +273,16 @@
           </section>
 
           <section class="grid-view is-hidden" id="gridView" aria-label="Frame grid">
+            <div class="grid-selection-bar" id="gridSelectionBar" aria-live="polite">
+              <span><strong id="gridSelectionCount">0</strong> selected</span>
+              <button class="primary-button" id="downloadSelectedFrames" type="button">
+                <span class="material-symbols-rounded" aria-hidden="true">download</span>
+                <span>Download selected</span>
+              </button>
+              <button class="icon-button" id="clearSelectedFrames" type="button" aria-label="Clear selected frames">
+                <span class="material-symbols-rounded" aria-hidden="true">close</span>
+              </button>
+            </div>
             <div class="frame-grid" id="frameGrid"></div>
             <button class="secondary-button load-more is-hidden" id="loadMoreFrames" type="button">Load more frames</button>
           </section>

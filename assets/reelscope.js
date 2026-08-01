@@ -25,6 +25,10 @@
     mobileGridView: $("mobileGridView"),
     frameGrid: $("frameGrid"),
     loadMoreFrames: $("loadMoreFrames"),
+    gridSelectionBar: $("gridSelectionBar"),
+    gridSelectionCount: $("gridSelectionCount"),
+    downloadSelectedFrames: $("downloadSelectedFrames"),
+    clearSelectedFrames: $("clearSelectedFrames"),
     viewerTitle: $("viewerTitle"),
     viewerEyebrow: $("viewerEyebrow"),
     viewerMeta: $("viewerMeta"),
@@ -59,6 +63,7 @@
     imageExt: $("imageExt"),
     zipSampleRate: $("zipSampleRate"),
     downloadCurrent: $("downloadCurrent"),
+    downloadFrameOverlay: $("downloadFrameOverlay"),
     downloadZip: $("downloadZip"),
     transcriptionModel: $("transcriptionModel"),
     transcriptionModelHelp: $("transcriptionModelHelp"),
@@ -67,6 +72,7 @@
     transcriptionStatus: $("transcriptionStatus"),
     transcriptionStatusText: $("transcriptionStatusText"),
     downloadTranscript: $("downloadTranscript"),
+    downloadTranscriptOverlay: $("downloadTranscriptOverlay"),
     transcriptWorkspace: $("transcriptWorkspace"),
     transcriptCues: $("transcriptCues"),
     transcriptCueCount: $("transcriptCueCount"),
@@ -101,6 +107,7 @@
     transcriptCueElements: [],
     activeTranscriptCue: -1,
     transcriptDirty: false,
+    selectedGridFrames: new Set(),
   };
 
   function icon(name) {
@@ -715,25 +722,50 @@
     elements.frameGrid.replaceChildren();
     const indexes = sampledGridIndexes();
     indexes.forEach((index) => {
-      const button = document.createElement("button");
-      button.className = "grid-item";
-      button.type = "button";
+      const card = document.createElement("article");
+      card.className = `grid-item${state.selectedGridFrames.has(index) ? " is-selected" : ""}`;
+      const openButton = document.createElement("button");
+      openButton.className = "grid-frame-button";
+      openButton.type = "button";
+      openButton.setAttribute("aria-label", `Open frame ${index + 1}`);
       const img = document.createElement("img");
       img.loading = "lazy";
       img.alt = `Frame ${index + 1}`;
       img.src = currentFrameUrl(index);
       const label = document.createElement("span");
       label.textContent = `${formatNumber(index + 1)} · ${timestampFromFilename(state.frames[index]) || state.frames[index]}`;
-      button.append(img, label);
-      button.addEventListener("click", () => {
+      openButton.append(img, label);
+      openButton.addEventListener("click", () => {
         state.viewMode = "carousel";
         updateViewMode();
         goToFrame(index);
       });
-      elements.frameGrid.appendChild(button);
+      const selectionLabel = document.createElement("label");
+      selectionLabel.className = "grid-checkbox";
+      const checkbox = document.createElement("input");
+      checkbox.type = "checkbox";
+      checkbox.checked = state.selectedGridFrames.has(index);
+      checkbox.setAttribute("aria-label", `Select frame ${index + 1}`);
+      selectionLabel.append(checkbox, icon("check"));
+      checkbox.addEventListener("change", () => {
+        if (checkbox.checked) state.selectedGridFrames.add(index);
+        else state.selectedGridFrames.delete(index);
+        card.classList.toggle("is-selected", checkbox.checked);
+        updateGridSelectionBar();
+      });
+      card.append(openButton, selectionLabel);
+      elements.frameGrid.appendChild(card);
     });
     elements.loadMoreFrames.classList.toggle("is-hidden", state.frames.length <= state.gridLimit || state.gridLimit >= 800);
     elements.loadMoreFrames.textContent = `Show more of ${formatNumber(state.frames.length)} frames`;
+    updateGridSelectionBar();
+  }
+
+  function updateGridSelectionBar() {
+    const count = state.selectedGridFrames.size;
+    elements.gridSelectionCount.textContent = formatNumber(count);
+    elements.gridSelectionBar.classList.toggle("is-visible", count > 0);
+    elements.downloadSelectedFrames.disabled = count === 0;
   }
 
   function updateViewMode() {
@@ -778,8 +810,10 @@
     elements.transcriptionStatus.dataset.state = transcriptionState;
     elements.transcribeButton.disabled = !state.currentJob?.video_available || state.currentJob?.state !== "done" || ["queued", "running"].includes(transcriptionState);
     elements.downloadTranscript.classList.toggle("is-hidden", transcriptionState !== "done");
+    elements.downloadTranscriptOverlay.classList.toggle("is-hidden", transcriptionState !== "done");
     if (transcriptionState === "done") {
       elements.downloadTranscript.href = status.download_url;
+      elements.downloadTranscriptOverlay.href = status.download_url;
       const resultCount = status.words ?? status.segments;
       const resultUnit = status.words ? "timestamped words" : "subtitle cues";
       elements.transcriptionStatusText.textContent = `${status.model_label || "Local model"} created ${formatNumber(resultCount)} ${resultUnit} on ${String(status.device || "local").toUpperCase()}.`;
@@ -855,6 +889,8 @@
     state.frames = Array.isArray(job.frames) ? job.frames : [];
     state.index = 0;
     state.gridLimit = 80;
+    state.selectedGridFrames.clear();
+    updateGridSelectionBar();
     state.viewMode = "carousel";
     elements.sourceVideo.pause();
     elements.sourceVideo.removeAttribute("src");
@@ -872,6 +908,7 @@
 
     const isDone = job.state === "done" && state.frames.length > 0;
     elements.downloadCurrent.disabled = !isDone;
+    elements.downloadFrameOverlay.disabled = !isDone;
     elements.downloadZip.disabled = !isDone;
     elements.videoViewButton.disabled = !isDone || !job.video_available;
     elements.mobileVideoView.disabled = !isDone || !job.video_available;
@@ -975,6 +1012,49 @@
     window.location.href = `/api/jobs/${encodeURIComponent(state.currentJobId)}/download.zip?${params}`;
   }
 
+  async function downloadSelectedGridFrames() {
+    const indices = Array.from(state.selectedGridFrames).sort((left, right) => left - right);
+    if (!state.currentJobId || !indices.length) return;
+    elements.downloadSelectedFrames.disabled = true;
+    elements.downloadSelectedFrames.replaceChildren(icon("refresh"), document.createTextNode(" Preparing download"));
+    try {
+      const response = await fetch(`/api/jobs/${encodeURIComponent(state.currentJobId)}/download-selected.zip`, {
+        method: "POST",
+        cache: "no-store",
+        credentials: "same-origin",
+        headers: {
+          "Content-Type": "application/json",
+          "X-CSRF-Token": config.csrfToken,
+        },
+        body: JSON.stringify({ indices }),
+      });
+      if (!response.ok) {
+        const payload = await response.json().catch(() => ({}));
+        throw new Error(payload.error || `Download failed (${response.status})`);
+      }
+      const blob = await response.blob();
+      const disposition = response.headers.get("Content-Disposition") || "";
+      const filenameMatch = disposition.match(/filename\*?=(?:UTF-8''|\")?([^\";]+)/i);
+      const filename = filenameMatch ? decodeURIComponent(filenameMatch[1].replace(/\"$/, "")) : "selected-frames.zip";
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = filename;
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+      showToast(`${formatNumber(indices.length)} selected frames downloaded.`);
+      state.selectedGridFrames.clear();
+      renderGrid();
+    } catch (error) {
+      showToast(error.message, "error");
+    } finally {
+      elements.downloadSelectedFrames.replaceChildren(icon("download"), document.createTextNode(" Download selected"));
+      elements.downloadSelectedFrames.disabled = state.selectedGridFrames.size === 0;
+    }
+  }
+
   function bindEvents() {
     [$("importButton"), $("newJobButton"), $("railImport"), $("mobileImportButton"), elements.dropZone].forEach((button) => button.addEventListener("click", () => {
       closeDrawers();
@@ -1054,8 +1134,13 @@
       const target = state.viewMode === "video" ? elements.sourceVideo : elements.primaryImage;
       if (target.requestFullscreen) target.requestFullscreen();
     });
-    elements.downloadCurrent.addEventListener("click", downloadCurrent);
+    [elements.downloadCurrent, elements.downloadFrameOverlay].forEach((button) => button.addEventListener("click", downloadCurrent));
     elements.downloadZip.addEventListener("click", downloadZip);
+    elements.downloadSelectedFrames.addEventListener("click", downloadSelectedGridFrames);
+    elements.clearSelectedFrames.addEventListener("click", () => {
+      state.selectedGridFrames.clear();
+      renderGrid();
+    });
     elements.transcribeButton.addEventListener("click", startTranscription);
     elements.copyTranscript.addEventListener("click", copyTranscriptText);
     elements.saveTranscript.addEventListener("click", saveTranscriptEdits);
