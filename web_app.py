@@ -27,6 +27,7 @@ from auth_store import AuthStore, User
 from frame_extractor import ExtractResult, extract_frames
 from transcriber import MODELS as TRANSCRIPTION_MODELS
 from transcriber import available_models, transcribe_to_srt
+from transcript_store import read_srt, update_cue_text, write_srt
 
 
 JobState = Literal["queued", "running", "done", "error"]
@@ -69,6 +70,7 @@ JOB_ID_RE = re.compile(r"^[0-9a-f]{32}$")
 
 executor = ThreadPoolExecutor(max_workers=int(os.environ.get("VIDEO_FRAMES_WORKERS", "1")))
 transcription_executor = ThreadPoolExecutor(max_workers=int(os.environ.get("REELSCOPE_TRANSCRIPTION_WORKERS", "1")))
+AUTO_TRANSCRIPTION_MODEL = os.environ.get("REELSCOPE_AUTO_TRANSCRIBE_MODEL", "whisper-turbo")
 jobs: dict[str, Job] = {}
 jobs_lock = threading.Lock()
 
@@ -491,11 +493,13 @@ def _extract_job(job_id: str, video_path: Path, original_filename: str, image_ex
 
 def _transcribe_job(job_id: str, model_key: str, language: str | None) -> None:
     model_info = TRANSCRIPTION_MODELS[model_key]
+    queued_status = _read_transcription_status(job_id)
     base_status = {
         "state": "running",
         "model": model_key,
         "model_label": model_info.label,
         "language_requested": language or "auto",
+        "automatic": bool(queued_status.get("automatic")),
         "started_utc": _utc_now_iso(),
         "progress_seconds": 0.0,
     }
@@ -536,6 +540,34 @@ def _transcribe_job(job_id: str, model_key: str, language: str | None) -> None:
                 "error": str(exc),
             },
         )
+
+
+def _queue_transcription(job_id: str, model_key: str, language: str | None, *, automatic: bool) -> dict:
+    if model_key not in TRANSCRIPTION_MODELS:
+        raise ValueError("unknown transcription model")
+    model_info = TRANSCRIPTION_MODELS[model_key]
+    queued = {
+        "state": "queued",
+        "model": model_key,
+        "model_label": model_info.label,
+        "language_requested": language or "auto",
+        "automatic": automatic,
+        "queued_utc": _utc_now_iso(),
+        "progress_seconds": 0.0,
+    }
+    _write_transcription_status(job_id, queued)
+    transcription_executor.submit(_transcribe_job, job_id, model_key, language)
+    return queued
+
+
+def _auto_transcribe_after_extraction(job_id: str) -> None:
+    job = _get_job(job_id)
+    if job is None or job.state != "done" or _video_path(job_id) is None:
+        return
+    if _read_transcription_status(job_id).get("state") != "idle":
+        return
+    model_key = AUTO_TRANSCRIPTION_MODEL if AUTO_TRANSCRIPTION_MODEL in TRANSCRIPTION_MODELS else "whisper-turbo"
+    _queue_transcription(job_id, model_key, None, automatic=True)
 
 
 @app.route("/login", methods=["GET", "POST"])
@@ -649,7 +681,8 @@ def create_job():
         _update_job(job_id, state="error", error=str(e))
         return jsonify({"error": str(e)}), 400
 
-    executor.submit(_extract_job, job_id, video_path, original_name, image_ext, sample_fps)
+    extraction_future = executor.submit(_extract_job, job_id, video_path, original_name, image_ext, sample_fps)
+    extraction_future.add_done_callback(lambda _future: _auto_transcribe_after_extraction(job_id))
     return jsonify({"job_id": job_id})
 
 
@@ -850,18 +883,34 @@ def start_transcription(job_id: str):
         return jsonify({"error": "unknown transcription model"}), 400
     raw_language = str(payload.get("language") or "").strip().lower()
     language = None if raw_language in {"", "auto"} else raw_language
-    model_info = TRANSCRIPTION_MODELS[model_key]
-    queued = {
-        "state": "queued",
-        "model": model_key,
-        "model_label": model_info.label,
-        "language_requested": language or "auto",
-        "queued_utc": _utc_now_iso(),
-        "progress_seconds": 0.0,
-    }
-    _write_transcription_status(job_id, queued)
-    transcription_executor.submit(_transcribe_job, job_id, model_key, language)
+    queued = _queue_transcription(job_id, model_key, language, automatic=False)
     return jsonify(queued), 202
+
+
+@app.route("/api/jobs/<job_id>/transcript", methods=["GET", "PUT"])
+@login_required
+def transcript_data(job_id: str):
+    job = _owned_job(job_id)
+    transcript_path = _transcript_path(job_id)
+    if job is None or not transcript_path.is_file() or _read_transcription_status(job_id).get("state") != "done":
+        return jsonify({"error": "transcript is not ready"}), 404
+
+    cues = read_srt(transcript_path)
+    if not cues:
+        return jsonify({"error": "transcript has no readable cues"}), 422
+    if request.method == "GET":
+        return jsonify({"cues": cues, "filename": f"{Path(job.filename).stem or 'transcript'}.srt"})
+
+    payload = request.get_json(silent=True) or {}
+    try:
+        cues = update_cue_text(cues, payload.get("cues"))
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    write_srt(transcript_path, cues)
+    status = _read_transcription_status(job_id)
+    status["edited_utc"] = _utc_now_iso()
+    _write_transcription_status(job_id, status)
+    return jsonify({"cues": cues, "saved": True, "edited_utc": status["edited_utc"]})
 
 
 @app.get("/api/jobs/<job_id>/transcript.srt")

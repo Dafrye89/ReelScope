@@ -231,6 +231,10 @@
               {% endfor %}
             </select>
             <p class="field-help" id="transcriptionModelHelp">Recommended multilingual balance of speed and accuracy.</p>
+            <div class="auto-transcription-note">
+              <span class="status-dot"></span>
+              Automatic after every new upload
+            </div>
             <label class="field-label" for="transcriptionLanguage">Language</label>
             <select id="transcriptionLanguage">
               <option value="auto" selected>Detect automatically</option>
@@ -248,6 +252,24 @@
               <span class="material-symbols-rounded" aria-hidden="true">download</span>
               Download SRT
             </a>
+            <div class="transcript-workspace is-hidden" id="transcriptWorkspace">
+              <div class="transcript-heading">
+                <div>
+                  <strong>Live transcript</strong>
+                  <span id="transcriptCueCount">0 cues</span>
+                </div>
+                <span class="live-transcript-badge"><span class="status-dot"></span>Follows video</span>
+              </div>
+              <p class="field-help">The current cue highlights during playback. Click a cue to seek, or edit the text and save your corrections.</p>
+              <div class="transcript-cues" id="transcriptCues" aria-label="Editable transcript cues"></div>
+              <div class="transcript-save-row">
+                <span id="transcriptSaveState">No unsaved changes</span>
+                <button class="secondary-button" id="saveTranscript" type="button" disabled>
+                  <span class="material-symbols-rounded" aria-hidden="true">check_circle</span>
+                  Save edits
+                </button>
+              </div>
+            </div>
           </section>
 
           <section class="inspector-section">

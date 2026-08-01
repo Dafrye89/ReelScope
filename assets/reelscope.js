@@ -64,6 +64,11 @@
     transcriptionStatus: $("transcriptionStatus"),
     transcriptionStatusText: $("transcriptionStatusText"),
     downloadTranscript: $("downloadTranscript"),
+    transcriptWorkspace: $("transcriptWorkspace"),
+    transcriptCues: $("transcriptCues"),
+    transcriptCueCount: $("transcriptCueCount"),
+    transcriptSaveState: $("transcriptSaveState"),
+    saveTranscript: $("saveTranscript"),
     statusText: $("statusText"),
     statusDetail: $("statusDetail"),
     statusSection: $("statusSection"),
@@ -86,6 +91,12 @@
     polling: false,
     playTimer: null,
     transcriptionTimer: null,
+    transcriptJobId: null,
+    transcriptLoadingJobId: null,
+    transcriptCues: [],
+    transcriptCueElements: [],
+    activeTranscriptCue: -1,
+    transcriptDirty: false,
   };
 
   function icon(name) {
@@ -183,6 +194,130 @@
     const lowTime = frameSecondsFromFilename(state.frames[low]) ?? 0;
     const nextTime = frameSecondsFromFilename(state.frames[next]) ?? lowTime;
     return Math.abs(nextTime - seconds) < Math.abs(seconds - lowTime) ? next : low;
+  }
+
+  function formatCueTime(seconds) {
+    const total = Math.max(0, Number(seconds) || 0);
+    const hours = Math.floor(total / 3600);
+    const minutes = Math.floor((total % 3600) / 60);
+    const secs = Math.floor(total % 60);
+    return hours > 0
+      ? `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}:${String(secs).padStart(2, "0")}`
+      : `${String(minutes).padStart(2, "0")}:${String(secs).padStart(2, "0")}`;
+  }
+
+  function setTranscriptDirty(dirty) {
+    state.transcriptDirty = Boolean(dirty);
+    elements.saveTranscript.disabled = !state.transcriptDirty;
+    elements.transcriptSaveState.textContent = state.transcriptDirty ? "Unsaved corrections" : "No unsaved changes";
+  }
+
+  function resetTranscript(jobId = null) {
+    state.transcriptJobId = jobId;
+    state.transcriptLoadingJobId = null;
+    state.transcriptCues = [];
+    state.transcriptCueElements = [];
+    state.activeTranscriptCue = -1;
+    elements.transcriptCues.replaceChildren();
+    elements.transcriptCueCount.textContent = "0 cues";
+    elements.transcriptWorkspace.classList.add("is-hidden");
+    setTranscriptDirty(false);
+  }
+
+  function updateActiveTranscriptCue(seconds) {
+    if (!state.transcriptCues.length) return;
+    const current = Number(seconds);
+    let active = state.transcriptCues.findIndex((cue) => current >= Number(cue.start) && current < Number(cue.end));
+    if (active < 0 && current >= Number(state.transcriptCues[state.transcriptCues.length - 1].end)) active = state.transcriptCues.length - 1;
+    if (active === state.activeTranscriptCue) return;
+    if (state.activeTranscriptCue >= 0) state.transcriptCueElements[state.activeTranscriptCue]?.classList.remove("is-active");
+    state.activeTranscriptCue = active;
+    if (active < 0) return;
+    const cueElement = state.transcriptCueElements[active];
+    cueElement?.classList.add("is-active");
+    if (!(document.activeElement instanceof HTMLTextAreaElement)) cueElement?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+  }
+
+  function seekToTranscriptCue(cue) {
+    if (!state.currentJob?.video_available) return;
+    if (state.viewMode !== "video") {
+      state.viewMode = "video";
+      updateViewMode();
+    }
+    const seconds = Number(cue.start) || 0;
+    elements.sourceVideo.currentTime = seconds;
+    goToFrame(nearestFrameIndex(seconds), { syncVideo: false });
+    updateActiveTranscriptCue(seconds);
+  }
+
+  function renderTranscriptCues() {
+    elements.transcriptCues.replaceChildren();
+    state.transcriptCueElements = [];
+    state.transcriptCues.forEach((cue, cueIndex) => {
+      const row = document.createElement("article");
+      row.className = "transcript-cue";
+      row.dataset.cueIndex = String(cueIndex);
+      const time = document.createElement("button");
+      time.className = "transcript-time";
+      time.type = "button";
+      time.textContent = formatCueTime(cue.start);
+      time.setAttribute("aria-label", `Seek video to ${formatCueTime(cue.start)}`);
+      time.addEventListener("click", () => seekToTranscriptCue(cue));
+      const textarea = document.createElement("textarea");
+      textarea.className = "transcript-text";
+      textarea.rows = 2;
+      textarea.value = cue.text;
+      textarea.setAttribute("aria-label", `Transcript cue ${cue.index}`);
+      textarea.addEventListener("input", () => {
+        cue.text = textarea.value;
+        setTranscriptDirty(true);
+      });
+      row.append(time, textarea);
+      elements.transcriptCues.appendChild(row);
+      state.transcriptCueElements.push(row);
+    });
+    elements.transcriptCueCount.textContent = `${formatNumber(state.transcriptCues.length)} ${state.transcriptCues.length === 1 ? "cue" : "cues"}`;
+    elements.transcriptWorkspace.classList.toggle("is-hidden", state.transcriptCues.length === 0);
+    setTranscriptDirty(false);
+    const initialSeconds = state.viewMode === "video" ? elements.sourceVideo.currentTime : frameSecondsFromFilename(state.frames[state.index]);
+    if (initialSeconds !== null) updateActiveTranscriptCue(initialSeconds);
+  }
+
+  async function loadTranscript(jobId) {
+    if (!jobId || state.transcriptLoadingJobId === jobId || state.transcriptJobId === jobId && state.transcriptCues.length) return;
+    state.transcriptJobId = jobId;
+    state.transcriptLoadingJobId = jobId;
+    try {
+      const payload = await fetchJson(`/api/jobs/${encodeURIComponent(jobId)}/transcript`);
+      if (state.currentJobId !== jobId) return;
+      state.transcriptCues = Array.isArray(payload.cues) ? payload.cues : [];
+      state.activeTranscriptCue = -1;
+      renderTranscriptCues();
+    } catch (error) {
+      if (state.currentJobId === jobId) showToast(error.message, "error");
+    } finally {
+      if (state.transcriptLoadingJobId === jobId) state.transcriptLoadingJobId = null;
+    }
+  }
+
+  async function saveTranscriptEdits() {
+    if (!state.currentJobId || !state.transcriptDirty) return;
+    elements.saveTranscript.disabled = true;
+    elements.transcriptSaveState.textContent = "Saving corrections...";
+    try {
+      const payload = await fetchJson(`/api/jobs/${encodeURIComponent(state.currentJobId)}/transcript`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ cues: state.transcriptCues.map(({ index, text }) => ({ index, text })) }),
+      });
+      state.transcriptCues = payload.cues;
+      setTranscriptDirty(false);
+      showToast("Transcript corrections saved to the SRT.");
+    } catch (error) {
+      elements.saveTranscript.disabled = false;
+      elements.transcriptSaveState.textContent = "Save failed";
+      showToast(error.message, "error");
+    }
   }
 
   function shortTimestamp(filename) {
@@ -456,6 +591,8 @@
         elements.sourceVideo.currentTime = seconds;
       }
     }
+    const frameSeconds = frameSecondsFromFilename(state.frames[state.index]);
+    if (frameSeconds !== null) updateActiveTranscriptCue(frameSeconds);
   }
 
   function stopPlayback() {
@@ -559,16 +696,21 @@
       elements.downloadTranscript.href = status.download_url;
       elements.transcriptionStatusText.textContent = `${status.model_label || "Local model"} created ${formatNumber(status.segments)} subtitle segments on ${String(status.device || "local").toUpperCase()}.`;
       elements.transcribeButton.replaceChildren(icon("refresh"), document.createTextNode(" Regenerate SRT"));
+      loadTranscript(state.currentJobId);
     } else if (transcriptionState === "running" || transcriptionState === "queued") {
       const progress = Number(status.progress_seconds || 0);
-      elements.transcriptionStatusText.textContent = progress > 0 ? `Transcribing… ${progress.toFixed(1)} seconds processed.` : "Loading the local model and preparing audio…";
-      elements.transcribeButton.replaceChildren(icon("hourglass_top"), document.createTextNode(" Transcribing"));
+      const prefix = status.automatic ? "Automatically transcribing" : "Transcribing";
+      elements.transcriptionStatusText.textContent = progress > 0 ? `${prefix}… ${progress.toFixed(1)} seconds processed.` : `${prefix}… loading the local model and preparing audio.`;
+      elements.transcribeButton.replaceChildren(icon("refresh"), document.createTextNode(" Transcribing"));
+      resetTranscript(state.currentJobId);
     } else if (transcriptionState === "error") {
       elements.transcriptionStatusText.textContent = status.error || "Transcription failed.";
-      elements.transcribeButton.replaceChildren(icon("subtitles"), document.createTextNode(" Try again"));
+      elements.transcribeButton.replaceChildren(icon("video_library"), document.createTextNode(" Try again"));
+      resetTranscript(state.currentJobId);
     } else {
-      elements.transcriptionStatusText.textContent = state.currentJob?.video_available ? "Generate a timestamped SRT locally. The first run downloads the selected model." : "Choose a completed video to transcribe.";
-      elements.transcribeButton.replaceChildren(icon("subtitles"), document.createTextNode(" Generate SRT"));
+      elements.transcriptionStatusText.textContent = state.currentJob?.video_available ? "New uploads transcribe automatically. Generate a transcript for this existing video." : "Choose a completed video to transcribe.";
+      elements.transcribeButton.replaceChildren(icon("video_library"), document.createTextNode(" Generate SRT"));
+      resetTranscript(state.currentJobId);
     }
   }
 
@@ -619,6 +761,7 @@
 
   function applyJob(job) {
     stopTranscriptionPolling();
+    if (state.transcriptJobId !== job.id) resetTranscript(job.id);
     state.currentJob = job;
     state.currentJobId = job.id;
     state.frames = Array.isArray(job.frames) ? job.frames : [];
@@ -764,7 +907,7 @@
     $("historyToggle").addEventListener("click", () => openDrawer("history"));
     $("inspectorToggle").addEventListener("click", () => openDrawer("inspector"));
     $("railHistory").addEventListener("click", () => {
-      if (window.innerWidth <= 980) openDrawer("history");
+      if (window.innerWidth <= 1080) openDrawer("history");
       else elements.search.focus();
     });
     elements.drawerBackdrop.addEventListener("click", closeDrawers);
@@ -804,6 +947,7 @@
     elements.downloadCurrent.addEventListener("click", downloadCurrent);
     elements.downloadZip.addEventListener("click", downloadZip);
     elements.transcribeButton.addEventListener("click", startTranscription);
+    elements.saveTranscript.addEventListener("click", saveTranscriptEdits);
     elements.transcriptionModel.addEventListener("change", () => {
       const selected = (config.transcriptionModels || []).find((model) => model.key === elements.transcriptionModel.value);
       elements.transcriptionModelHelp.textContent = selected?.description || "Local timestamped speech-to-text.";
@@ -814,6 +958,7 @@
       if (state.viewMode !== "video" || !state.frames.length) return;
       const index = nearestFrameIndex(elements.sourceVideo.currentTime);
       if (index !== state.index) goToFrame(index, { syncVideo: false });
+      updateActiveTranscriptCue(elements.sourceVideo.currentTime);
       elements.videoSyncText.textContent = `Frame ${formatNumber(state.index + 1)} selected at ${timestampFromFilename(state.frames[state.index]) || "current time"}`;
     });
     elements.sourceVideo.addEventListener("play", () => {
@@ -868,7 +1013,7 @@
         renderFilmstrip();
         updateFrameRatio();
       }
-      if (window.innerWidth > 980) closeDrawers();
+      if (window.innerWidth > 1080) closeDrawers();
     });
   }
 

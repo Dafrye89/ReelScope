@@ -128,6 +128,7 @@ class WebAppHistoryTests(unittest.TestCase):
             f"/api/jobs/{self.job_id}/frame/0/download.png",
             f"/api/jobs/{self.job_id}/download.zip",
             f"/api/jobs/{self.job_id}/transcription",
+            f"/api/jobs/{self.job_id}/transcript",
             f"/api/jobs/{self.job_id}/transcript.srt",
         ]
         for route in routes:
@@ -145,6 +146,42 @@ class WebAppHistoryTests(unittest.TestCase):
                 headers={"X-CSRF-Token": "test-csrf-token-with-at-least-32-characters"},
             )
         self.assertEqual(response.status_code, 202)
+        submit.assert_called_once()
+
+    def test_transcript_is_visible_editable_and_rewrites_srt(self) -> None:
+        transcript = (
+            "1\n00:00:00,000 --> 00:00:01,500\nOriginal first cue.\n\n"
+            "2\n00:00:01,500 --> 00:00:03,000\nOriginal second cue.\n\n"
+        )
+        (self.job_dir / "transcript.srt").write_text(transcript, encoding="utf-8")
+        (self.job_dir / "transcription.json").write_text(
+            '{"state":"done","segments":2,"model_label":"Whisper Large-v3 Turbo"}', encoding="utf-8"
+        )
+
+        response = self.client.get(f"/api/jobs/{self.job_id}/transcript")
+        self.assertEqual(response.status_code, 200)
+        cues = response.get_json()["cues"]
+        self.assertEqual(cues[0]["start"], 0.0)
+        self.assertEqual(cues[1]["end"], 3.0)
+
+        updates = [{"index": 1, "text": "Corrected first cue."}, {"index": 2, "text": "Corrected second cue."}]
+        saved = self.client.put(
+            f"/api/jobs/{self.job_id}/transcript",
+            json={"cues": updates},
+            headers={"X-CSRF-Token": "test-csrf-token-with-at-least-32-characters"},
+        )
+        self.assertEqual(saved.status_code, 200)
+        rewritten = (self.job_dir / "transcript.srt").read_text(encoding="utf-8")
+        self.assertIn("Corrected first cue.", rewritten)
+        self.assertIn("00:00:01,500 --> 00:00:03,000", rewritten)
+
+    def test_completed_new_upload_automatically_queues_transcription(self) -> None:
+        with patch.object(web_app.transcription_executor, "submit") as submit:
+            web_app._auto_transcribe_after_extraction(self.job_id)
+        status = json.loads((self.job_dir / "transcription.json").read_text(encoding="utf-8"))
+        self.assertEqual(status["state"], "queued")
+        self.assertTrue(status["automatic"])
+        self.assertEqual(status["model"], "whisper-turbo")
         submit.assert_called_once()
 
     def test_registration_and_login_use_username_and_password_only(self) -> None:

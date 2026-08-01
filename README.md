@@ -12,7 +12,8 @@ ReelScope is a private, local-first video workspace for Windows. Drop in a video
 - Ratio-aware frame stage for landscape, portrait, square, and ultrawide video
 - Filmstrip, grid, keyboard navigation, playback, and precise frame selection
 - Original-video playback synchronized to the selected extracted frame
-- Local CUDA speech-to-text with downloadable SRT subtitles
+- Automatic local speech-to-text for every new upload, with downloadable SRT subtitles
+- Live transcript highlighting during source-video playback, timestamp seeking, and in-app text correction
 - Simple username/password accounts with strict per-user video, frame, export, and transcript isolation
 - Light and dark themes
 - CPU extraction everywhere; CUDA acceleration when a compatible FFmpeg build and NVIDIA driver are available
@@ -66,6 +67,10 @@ ReelScope uses Faster-Whisper with three selectable local models. Model files do
 - **Whisper Large-v3 Turbo** — recommended multilingual speed/accuracy balance
 - **Distil-Whisper Large-v3.5** — fastest high-quality English choice
 - **Whisper Large-v3** — slower full-size accuracy choice
+
+Every new upload automatically starts transcription with Whisper Large-v3 Turbo after frame extraction completes. Set `REELSCOPE_AUTO_TRANSCRIBE_MODEL` to `distil-whisper` or `whisper-large-v3` to change that default.
+
+While the original video plays, ReelScope highlights the matching transcript cue. Click a cue timestamp to seek the video, edit any cue directly in the workspace, and choose **Save edits** to regenerate the job's SRT file.
 
 The RTX 3090 path uses CUDA float16. If CUDA model loading is unavailable, ReelScope automatically retries with CPU int8. Transcript text and SRT files remain in the owning user's local job directory.
 
