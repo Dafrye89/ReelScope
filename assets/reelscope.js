@@ -20,6 +20,9 @@
     carouselViewButton: $("carouselViewButton"),
     videoViewButton: $("videoViewButton"),
     gridViewButton: $("gridViewButton"),
+    mobileCarouselView: $("mobileCarouselView"),
+    mobileVideoView: $("mobileVideoView"),
+    mobileGridView: $("mobileGridView"),
     frameGrid: $("frameGrid"),
     loadMoreFrames: $("loadMoreFrames"),
     viewerTitle: $("viewerTitle"),
@@ -466,15 +469,22 @@
   }
 
   function openDrawer(panel) {
-    elements.historyPanel.classList.toggle("is-open", panel === "history");
-    elements.inspectorPanel.classList.toggle("is-open", panel === "inspector");
-    elements.drawerBackdrop.classList.remove("is-hidden");
+    const target = panel === "history" ? elements.historyPanel : elements.inspectorPanel;
+    const shouldOpen = !target.classList.contains("is-open");
+    elements.historyPanel.classList.remove("is-open");
+    elements.inspectorPanel.classList.remove("is-open");
+    if (shouldOpen) target.classList.add("is-open");
+    elements.drawerBackdrop.classList.toggle("is-hidden", !shouldOpen);
+    $("historyToggle").setAttribute("aria-expanded", String(shouldOpen && panel === "history"));
+    $("historyToggle").setAttribute("aria-label", shouldOpen && panel === "history" ? "Close menu" : "Open menu");
   }
 
   function closeDrawers() {
     elements.historyPanel.classList.remove("is-open");
     elements.inspectorPanel.classList.remove("is-open");
     elements.drawerBackdrop.classList.add("is-hidden");
+    $("historyToggle").setAttribute("aria-expanded", "false");
+    $("historyToggle").setAttribute("aria-label", "Open menu");
   }
 
   function historyCard(job) {
@@ -581,7 +591,7 @@
     if (!width || !height) return;
     const ratio = width / height;
     const stageBounds = elements.mediaStage.getBoundingClientRect();
-    const maxWidth = stageBounds.width * (window.innerWidth <= 700 ? 0.46 : 0.50);
+    const maxWidth = stageBounds.width * (window.innerWidth <= 700 ? 0.9 : 0.50);
     const maxHeight = Math.max(180, stageBounds.height - 20);
     let cardWidth = Math.min(maxWidth, maxHeight * ratio);
     let cardHeight = cardWidth / ratio;
@@ -737,6 +747,14 @@
     elements.carouselViewButton.setAttribute("aria-pressed", state.viewMode === "carousel" ? "true" : "false");
     elements.videoViewButton.setAttribute("aria-pressed", state.viewMode === "video" ? "true" : "false");
     elements.gridViewButton.setAttribute("aria-pressed", state.viewMode === "grid" ? "true" : "false");
+    [
+      [elements.mobileCarouselView, "carousel"],
+      [elements.mobileVideoView, "video"],
+      [elements.mobileGridView, "grid"],
+    ].forEach(([button, mode]) => {
+      button.classList.toggle("is-active", state.viewMode === mode);
+      button.setAttribute("aria-pressed", state.viewMode === mode ? "true" : "false");
+    });
     const videoMode = hasFrames && state.viewMode === "video" && state.currentJob?.video_available;
     elements.mediaStage.classList.toggle("is-video-mode", Boolean(videoMode));
     elements.videoCard.classList.toggle("is-hidden", !videoMode);
@@ -856,6 +874,7 @@
     elements.downloadCurrent.disabled = !isDone;
     elements.downloadZip.disabled = !isDone;
     elements.videoViewButton.disabled = !isDone || !job.video_available;
+    elements.mobileVideoView.disabled = !isDone || !job.video_available;
     if (job.image_ext) elements.imageExt.value = String(job.image_ext).toLowerCase() === ".png" ? ".png" : ".jpg";
     elements.extractRate.value = job.sample_fps ? String(job.sample_fps) : "all";
 
@@ -957,7 +976,10 @@
   }
 
   function bindEvents() {
-    [$("importButton"), $("newJobButton"), $("railImport"), elements.dropZone].forEach((button) => button.addEventListener("click", chooseFile));
+    [$("importButton"), $("newJobButton"), $("railImport"), $("mobileImportButton"), elements.dropZone].forEach((button) => button.addEventListener("click", () => {
+      closeDrawers();
+      chooseFile();
+    }));
     elements.fileInput.addEventListener("change", () => uploadFile(elements.fileInput.files?.[0]));
     $("refreshHistory").addEventListener("click", () => refreshHistory(false));
     elements.search.addEventListener("input", () => {
@@ -973,9 +995,10 @@
       }
     });
 
-    [$("themeToggle"), $("railTheme")].forEach((button) => button.addEventListener("click", toggleTheme));
+    [$("themeToggle"), $("railTheme"), $("mobileThemeButton")].forEach((button) => button.addEventListener("click", toggleTheme));
     $("historyToggle").addEventListener("click", () => openDrawer("history"));
     $("inspectorToggle").addEventListener("click", () => openDrawer("inspector"));
+    $("mobileInspectorButton").addEventListener("click", () => openDrawer("inspector"));
     $("railHistory").addEventListener("click", () => {
       if (window.innerWidth <= 1080) openDrawer("history");
       else elements.search.focus();
@@ -995,6 +1018,23 @@
       if (!state.currentJob?.video_available) return;
       state.viewMode = "video";
       updateViewMode();
+    });
+    elements.mobileCarouselView.addEventListener("click", () => {
+      state.viewMode = "carousel";
+      updateViewMode();
+      renderCurrentFrame();
+      closeDrawers();
+    });
+    elements.mobileGridView.addEventListener("click", () => {
+      state.viewMode = "grid";
+      updateViewMode();
+      closeDrawers();
+    });
+    elements.mobileVideoView.addEventListener("click", () => {
+      if (!state.currentJob?.video_available) return;
+      state.viewMode = "video";
+      updateViewMode();
+      closeDrawers();
     });
     elements.loadMoreFrames.addEventListener("click", () => {
       state.gridLimit = Math.min(800, state.gridLimit + 80);

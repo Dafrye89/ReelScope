@@ -29,8 +29,8 @@
         </label>
 
         <div class="top-actions">
-          <button class="icon-button mobile-only" id="historyToggle" type="button" aria-label="Show history">
-            <span class="material-symbols-rounded" aria-hidden="true">history</span>
+          <button class="icon-button mobile-only" id="historyToggle" type="button" aria-label="Open menu" aria-controls="historyPanel" aria-expanded="false">
+            <span class="material-symbols-rounded" aria-hidden="true">menu</span>
           </button>
           <button class="icon-button" id="themeToggle" type="button" aria-label="Switch to light mode">
             <span class="material-symbols-rounded theme-icon-dark" aria-hidden="true">light_mode</span>
@@ -81,6 +81,36 @@
             <button class="icon-button compact" id="newJobButton" type="button" aria-label="Import a new video">
               <span class="material-symbols-rounded" aria-hidden="true">add</span>
             </button>
+          </div>
+          <div class="mobile-menu-tools" aria-label="Mobile workspace menu">
+            <div class="mobile-mode-switcher" role="group" aria-label="View mode">
+              <button class="mobile-menu-button is-active" id="mobileCarouselView" type="button" aria-pressed="true">
+                <span class="material-symbols-rounded" aria-hidden="true">view_carousel</span>
+                Frames
+              </button>
+              <button class="mobile-menu-button" id="mobileVideoView" type="button" aria-pressed="false">
+                <span class="material-symbols-rounded" aria-hidden="true">play_arrow</span>
+                Video
+              </button>
+              <button class="mobile-menu-button" id="mobileGridView" type="button" aria-pressed="false">
+                <span class="material-symbols-rounded" aria-hidden="true">grid_view</span>
+                Grid
+              </button>
+            </div>
+            <div class="mobile-menu-actions">
+              <button class="mobile-menu-button" id="mobileImportButton" type="button">
+                <span class="material-symbols-rounded" aria-hidden="true">upload</span>
+                Import video
+              </button>
+              <button class="mobile-menu-button" id="mobileInspectorButton" type="button">
+                <span class="material-symbols-rounded" aria-hidden="true">tune</span>
+                Settings &amp; exports
+              </button>
+              <button class="mobile-menu-button" id="mobileThemeButton" type="button">
+                <span class="material-symbols-rounded" aria-hidden="true">contrast</span>
+                Toggle theme
+              </button>
+            </div>
           </div>
           <div class="history-summary">
             <span id="historyCount">0 saved jobs</span>
@@ -178,11 +208,12 @@
                 </div>
                 <div class="transcript-actions">
                   <button class="secondary-button compact-button" id="copyTranscript" type="button">
-                    Copy
+                    <span class="material-symbols-rounded" aria-hidden="true">content_copy</span>
+                    <span class="copy-label">Copy</span>
                   </button>
                   <button class="secondary-button compact-button" id="saveTranscript" type="button" disabled>
                     <span class="material-symbols-rounded" aria-hidden="true">check_circle</span>
-                    Save
+                    <span class="save-label">Save</span>
                   </button>
                 </div>
               </div>
