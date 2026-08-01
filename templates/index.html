@@ -171,23 +171,25 @@
 
             <section class="transcript-workspace is-hidden" id="transcriptWorkspace" aria-label="Word-timed transcript">
               <div class="transcript-heading">
-                <div>
-                  <span class="eyebrow">Speech timeline</span>
-                  <strong>Word-by-word transcript</strong>
+                <div class="transcript-title">
+                  <strong>Live transcript</strong>
+                  <span class="live-transcript-badge"><span class="status-dot"></span>Live</span>
+                  <span class="transcript-count" id="transcriptCueCount">0 words</span>
                 </div>
-                <div class="transcript-heading-meta">
-                  <span id="transcriptCueCount">0 words</span>
-                  <span class="live-transcript-badge"><span class="status-dot"></span>Follows playback</span>
+                <div class="transcript-actions">
+                  <button class="secondary-button compact-button" id="copyTranscript" type="button">
+                    Copy
+                  </button>
+                  <button class="secondary-button compact-button" id="saveTranscript" type="button" disabled>
+                    <span class="material-symbols-rounded" aria-hidden="true">check_circle</span>
+                    Save
+                  </button>
                 </div>
               </div>
-              <p class="transcript-help">The spoken word highlights as the video plays. Select a timestamp to seek, or correct any word below.</p>
-              <div class="transcript-cues" id="transcriptCues" aria-label="Editable word-timed transcript"></div>
+              <div class="transcript-cues" id="transcriptCues" aria-label="Editable live transcript"></div>
               <div class="transcript-save-row">
-                <span id="transcriptSaveState">No unsaved changes</span>
-                <button class="secondary-button" id="saveTranscript" type="button" disabled>
-                  <span class="material-symbols-rounded" aria-hidden="true">check_circle</span>
-                  Save SRT edits
-                </button>
+                <span>Click a timestamp to seek. Select any word to correct it.</span>
+                <span id="transcriptSaveState">Saved</span>
               </div>
             </section>
 
