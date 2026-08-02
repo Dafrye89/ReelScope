@@ -12,13 +12,13 @@ ReelScope is a private, local-first video workspace for Windows. Drop in a video
 - Ratio-aware frame stage for landscape, portrait, square, and ultrawide video
 - Filmstrip, grid, keyboard navigation, playback, and precise frame selection
 - Original-video playback synchronized to the selected extracted frame
-- Automatic local speech-to-text for every new upload, with downloadable SRT subtitles
+- Automatic speech-to-text for every new upload using local Whisper or an optional per-user ElevenLabs account
 - Word-by-word SRT output with live word highlighting beneath the main viewer, timestamp seeking, and in-app correction
 - Simple username/password accounts with strict per-user video, frame, export, and transcript isolation
 - Light and dark themes
 - CPU extraction everywhere; CUDA acceleration when a compatible FFmpeg build and NVIDIA driver are available
 - Web UI plus a native Edge WebView2 desktop window with no background command prompt
-- Local processing: uploaded videos and extracted frames stay on your computer
+- Local-first processing: uploads stay on your computer unless their owner explicitly selects ElevenLabs transcription
 
 ## Quick start
 
@@ -74,6 +74,16 @@ Each spoken word becomes its own precisely timed SRT cue. The transcript appears
 
 The RTX 3090 path uses CUDA float16. If CUDA model loading is unavailable, ReelScope automatically retries with CPU int8. Transcript text and SRT files remain in the owning user's local job directory.
 
+## Optional ElevenLabs transcription
+
+Each account can choose **ElevenLabs · cloud API** in the Transcription panel, paste its own API key, configure the provider, and save it as the automatic default for future uploads. ReelScope validates the key with ElevenLabs, encrypts it on the server, never returns it to the browser, and keeps the setting isolated to that account. Removing the saved key switches the account back to local transcription.
+
+The panel exposes the ElevenLabs options that apply to ReelScope's synchronous, owned-file workflow: Scribe v2 or v1, language hints, word or character timestamps, audio-event tagging, diarization and speaker settings, multichannel output, logging, temperature, seed, keyterms, entity detection and redaction, and DOCX/HTML/PDF/SRT/TXT/segmented-JSON exports. URL, webhook, single-use-token, and raw PCM transport modes are handled by ReelScope rather than exposed as user settings. Word timing is always retained so playback highlighting continues to work.
+
+Selecting ElevenLabs sends that user's original video to ElevenLabs and may incur usage charges on their ElevenLabs account. Several advanced options have separate provider surcharges; ReelScope labels those options in the panel.
+
+By default, the credential-encryption key is generated once at `<data directory>/.credential_key`. Back up this file with the data directory. A deployment can instead supply a stable Fernet key through `REELSCOPE_CREDENTIAL_KEY`; changing or losing the key makes previously saved API keys unreadable.
+
 ## CUDA requirements
 
 ReelScope checks the output of `ffmpeg -hwaccels` and selects CUDA only when the chosen build reports it. The CUDA launcher expects matching `ffmpeg.exe` and `ffprobe.exe` files in the Anaconda installation. The NVIDIA driver must support the decoder used by the source video.
@@ -100,7 +110,7 @@ The UI is plain HTML, CSS, and JavaScript served by Flask. No external CDN is re
 
 ## Privacy, data, and network use
 
-ReelScope has no analytics, cloud upload, or telemetry. Browser mode binds to all local interfaces by default so registered users on the LAN can reach it. The built-in server is intended for a trusted local network; before exposing it to the public internet, place it behind an HTTPS reverse proxy and set `REELSCOPE_SECURE_COOKIES=1`.
+ReelScope has no analytics or telemetry. Frame extraction and local Whisper transcription remain on the host. When a user selects ElevenLabs, ReelScope sends only that user's source video and chosen speech-to-text options to the ElevenLabs API. Browser mode binds to all local interfaces by default so registered users on the LAN can reach it. The built-in server is intended for a trusted local network; before exposing it to the public internet, place it behind an HTTPS reverse proxy and set `REELSCOPE_SECURE_COOKIES=1`.
 
 ## License
 

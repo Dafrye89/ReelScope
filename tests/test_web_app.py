@@ -137,7 +137,11 @@ class WebAppHistoryTests(unittest.TestCase):
 
     def test_other_user_cannot_access_any_job_artifact(self) -> None:
         (self.job_dir / "transcript.srt").write_text("1\n00:00:00,000 --> 00:00:01,000\nPrivate\n", encoding="utf-8")
-        (self.job_dir / "transcription.json").write_text('{"state":"done"}', encoding="utf-8")
+        (self.job_dir / "elevenlabs-transcript.txt").write_text("Private export", encoding="utf-8")
+        (self.job_dir / "transcription.json").write_text(
+            '{"state":"done","additional_formats":[{"format":"txt","filename":"elevenlabs-transcript.txt"}]}',
+            encoding="utf-8",
+        )
         self._login_as(self.other.id)
         routes = [
             f"/api/jobs/{self.job_id}",
@@ -148,6 +152,7 @@ class WebAppHistoryTests(unittest.TestCase):
             f"/api/jobs/{self.job_id}/transcription",
             f"/api/jobs/{self.job_id}/transcript",
             f"/api/jobs/{self.job_id}/transcript.srt",
+            f"/api/jobs/{self.job_id}/transcript-export/elevenlabs-transcript.txt",
         ]
         for route in routes:
             with self.subTest(route=route):
@@ -171,6 +176,53 @@ class WebAppHistoryTests(unittest.TestCase):
             )
         self.assertEqual(response.status_code, 202)
         submit.assert_called_once()
+
+    def test_elevenlabs_key_is_validated_encrypted_and_private_to_account(self) -> None:
+        initial = self.client.get("/api/account/transcription-settings")
+        self.assertEqual(initial.status_code, 200)
+        self.assertNotIn("api_key", initial.get_json())
+
+        payload = {
+            "provider": "elevenlabs",
+            "local": {"model": "whisper-turbo", "language": "auto"},
+            "elevenlabs": {"model_id": "scribe_v2", "language_code": "auto"},
+            "api_key": "elevenlabs-secret-key-1234",
+        }
+        with patch.object(web_app, "validate_elevenlabs_api_key", return_value={"tier": "creator"}) as validate:
+            response = self.client.put(
+                "/api/account/transcription-settings",
+                json=payload,
+                headers={"X-CSRF-Token": "test-csrf-token-with-at-least-32-characters"},
+            )
+        self.assertEqual(response.status_code, 200)
+        saved = response.get_json()
+        self.assertTrue(saved["api_key_configured"])
+        self.assertEqual(saved["api_key_suffix"], "1234")
+        self.assertNotIn("api_key", saved)
+        self.assertNotIn("elevenlabs-secret-key", response.get_data(as_text=True))
+        validate.assert_called_once_with("elevenlabs-secret-key-1234")
+
+        stored = self.store.get_transcription_settings(self.owner.id)
+        self.assertIsNotNone(stored)
+        self.assertNotIn(b"elevenlabs-secret-key", bytes(stored["elevenlabs_api_key_encrypted"]))
+
+        self._login_as(self.other.id)
+        other_settings = self.client.get("/api/account/transcription-settings").get_json()
+        self.assertFalse(other_settings["api_key_configured"])
+        self.assertEqual(other_settings["provider"], "local")
+
+    def test_elevenlabs_settings_reject_incompatible_options(self) -> None:
+        response = self.client.put(
+            "/api/account/transcription-settings",
+            json={
+                "provider": "local",
+                "local": {"model": "whisper-turbo", "language": "auto"},
+                "elevenlabs": {"model_id": "scribe_v2", "use_multi_channel": True, "diarize": True},
+            },
+            headers={"X-CSRF-Token": "test-csrf-token-with-at-least-32-characters"},
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("multi-channel", response.get_json()["error"])
 
     def test_transcript_is_visible_editable_and_rewrites_srt(self) -> None:
         transcript = (

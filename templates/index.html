@@ -292,26 +292,132 @@
           <section class="inspector-section">
             <div class="section-heading">
               <div>
-                <p class="eyebrow">Local speech-to-text</p>
+                <p class="eyebrow">Speech-to-text</p>
                 <h2>Transcription</h2>
               </div>
             </div>
-            <label class="field-label" for="transcriptionModel">Model</label>
-            <select id="transcriptionModel">
-              {% for model in transcription_models %}
-              <option value="{{ model.key }}" {% if model.key == 'whisper-turbo' %}selected{% endif %}>{{ model.label }}</option>
-              {% endfor %}
+            <label class="field-label" for="transcriptionProvider">Provider</label>
+            <select id="transcriptionProvider">
+              <option value="local" selected>Local PC · private and free</option>
+              <option value="elevenlabs">ElevenLabs · cloud API</option>
             </select>
-            <p class="field-help" id="transcriptionModelHelp">Recommended multilingual balance of speed and accuracy.</p>
+
+            <div id="localTranscriptionSettings">
+              <label class="field-label" for="transcriptionModel">Local model</label>
+              <select id="transcriptionModel">
+                {% for model in transcription_models %}
+                <option value="{{ model.key }}" {% if model.key == 'whisper-turbo' %}selected{% endif %}>{{ model.label }}</option>
+                {% endfor %}
+              </select>
+              <p class="field-help" id="transcriptionModelHelp">Recommended multilingual balance of speed and accuracy.</p>
+              <label class="field-label" for="transcriptionLanguage">Language</label>
+              <select id="transcriptionLanguage">
+                <option value="auto" selected>Detect automatically</option>
+                <option value="en">English</option>
+              </select>
+            </div>
+
+            <div class="provider-settings is-hidden" id="elevenLabsSettings">
+              <label class="field-label" for="elevenLabsApiKey">API key</label>
+              <div class="credential-row">
+                <input id="elevenLabsApiKey" type="password" maxlength="256" autocomplete="off" placeholder="Paste a new ElevenLabs key" />
+                <button class="icon-button" id="removeElevenLabsKey" type="button" aria-label="Remove saved ElevenLabs API key" disabled>
+                  <span class="material-symbols-rounded" aria-hidden="true">close</span>
+                </button>
+              </div>
+              <p class="field-help" id="elevenLabsKeyStatus">No key saved. Keys are encrypted on this ReelScope server and are never returned to the browser.</p>
+
+              <label class="field-label" for="elevenLabsModel">ElevenLabs model</label>
+              <select id="elevenLabsModel">
+                {% for model in elevenlabs_models %}
+                <option value="{{ model.id }}" {% if model.id == 'scribe_v2' %}selected{% endif %}>{{ model.label }}</option>
+                {% endfor %}
+              </select>
+              <p class="field-help" id="elevenLabsModelHelp">Newest batch model with keyterms, entities, speaker tools, and 90+ languages.</p>
+
+              <label class="field-label" for="elevenLabsLanguage">Language hint</label>
+              <input id="elevenLabsLanguage" type="text" maxlength="4" value="auto" placeholder="auto, en, or eng" />
+              <p class="field-help">Use auto or any ISO-639-1/3 code supported by Scribe.</p>
+
+              <details class="advanced-settings" id="elevenLabsAdvanced">
+                <summary>All ElevenLabs options</summary>
+                <div class="advanced-settings-body">
+                  <label class="field-label" for="elevenLabsTimestamps">Timestamp detail</label>
+                  <select id="elevenLabsTimestamps">
+                    <option value="word" selected>Word</option>
+                    <option value="character">Character</option>
+                    <option value="none" disabled>None · unavailable because ReelScope highlights words</option>
+                  </select>
+
+                  <div class="toggle-stack">
+                    <label><input id="elevenLabsAudioEvents" type="checkbox" checked /> Tag audio events</label>
+                    <label><input id="elevenLabsNoVerbatim" type="checkbox" /> Remove fillers and false starts <span class="cost-note">Scribe v2</span></label>
+                    <label><input id="elevenLabsDiarize" type="checkbox" /> Speaker diarization</label>
+                    <label><input id="elevenLabsSpeakerLabels" type="checkbox" /> Add speaker labels to ReelScope SRT</label>
+                    <label><input id="elevenLabsSpeakerLibrary" type="checkbox" /> Match saved speaker library</label>
+                    <label><input id="elevenLabsSpeakerRoles" type="checkbox" /> Detect agent/customer roles <span class="cost-note">+10%</span></label>
+                    <label><input id="elevenLabsMultiChannel" type="checkbox" /> Multi-channel audio <span class="cost-note">billed per channel</span></label>
+                    <label><input id="elevenLabsLogging" type="checkbox" checked /> ElevenLabs logging <span class="cost-note">turn off for Enterprise zero retention</span></label>
+                  </div>
+
+                  <div class="settings-pair">
+                    <label>Speakers <input id="elevenLabsNumSpeakers" type="number" min="1" max="32" placeholder="Auto" /></label>
+                    <label>Diarization threshold <input id="elevenLabsDiarizationThreshold" type="number" min="0.1" max="0.4" step="0.01" placeholder="Auto · usually 0.22" /></label>
+                  </div>
+                  <label class="field-label" for="elevenLabsMultiChannelStyle">Multi-channel output</label>
+                  <select id="elevenLabsMultiChannelStyle">
+                    <option value="combined" selected>Combined and time-sorted</option>
+                    <option value="separate">Separate channels, merged by ReelScope</option>
+                  </select>
+
+                  <div class="settings-pair">
+                    <label>Temperature <input id="elevenLabsTemperature" type="number" min="0" max="2" step="0.1" placeholder="Model default" /></label>
+                    <label>Seed <input id="elevenLabsSeed" type="number" min="0" max="2147483647" step="1" placeholder="Optional" /></label>
+                  </div>
+
+                  <label class="field-label" for="elevenLabsKeyterms">Keyterms <span class="cost-note">up to 1,000 · +20%</span></label>
+                  <textarea id="elevenLabsKeyterms" rows="3" placeholder="One term per line: ReelScope&#10;product name&#10;person name"></textarea>
+
+                  <label class="field-label" for="elevenLabsEntityDetection">Entity detection <span class="cost-note">+30%</span></label>
+                  <textarea id="elevenLabsEntityDetection" rows="2" placeholder="all, pii, phi, pci, other, offensive_language, or exact entity types"></textarea>
+                  <label class="field-label" for="elevenLabsEntityRedaction">Entity redaction <span class="cost-note">+30%</span></label>
+                  <textarea id="elevenLabsEntityRedaction" rows="2" placeholder="Must be a subset of entity detection"></textarea>
+                  <label class="field-label" for="elevenLabsRedactionMode">Redaction style</label>
+                  <select id="elevenLabsRedactionMode">
+                    <option value="enumerated_entity_type" selected>{ENTITY_TYPE_1}</option>
+                    <option value="entity_type">{ENTITY_TYPE}</option>
+                    <option value="redacted">{REDACTED}</option>
+                  </select>
+
+                  <fieldset class="format-options">
+                    <legend>Additional ElevenLabs exports</legend>
+                    {% for format in ['docx', 'html', 'pdf', 'srt', 'txt', 'segmented_json'] %}
+                    <label><input type="checkbox" name="elevenLabsFormat" value="{{ format }}" /> {{ format|upper }}</label>
+                    {% endfor %}
+                  </fieldset>
+                  <div class="toggle-stack compact-toggles">
+                    <label><input id="elevenLabsExportSpeakers" type="checkbox" checked /> Export speaker labels</label>
+                    <label><input id="elevenLabsExportTimestamps" type="checkbox" checked /> Export timestamps</label>
+                  </div>
+                  <div class="settings-pair export-settings">
+                    <label>Split silence (s) <input id="elevenLabsExportSilence" type="number" min="0" step="0.1" placeholder="Default" /></label>
+                    <label>Max segment (s) <input id="elevenLabsExportDuration" type="number" min="0.1" step="0.1" placeholder="Default" /></label>
+                    <label>Max segment chars <input id="elevenLabsExportChars" type="number" min="1" step="1" placeholder="Default" /></label>
+                    <label>Max line chars <input id="elevenLabsExportLineChars" type="number" min="1" step="1" placeholder="SRT/TXT default" /></label>
+                  </div>
+                  <p class="field-help">ReelScope always sends the owned original upload synchronously. URL, webhook, single-use token, and raw PCM modes are managed by the app rather than exposed here.</p>
+                </div>
+              </details>
+            </div>
+
             <div class="auto-transcription-note">
               <span class="status-dot"></span>
-              Automatic after every new upload
+              Saved provider runs automatically after every new upload
             </div>
-            <label class="field-label" for="transcriptionLanguage">Language</label>
-            <select id="transcriptionLanguage">
-              <option value="auto" selected>Detect automatically</option>
-              <option value="en">English</option>
-            </select>
+            <button class="secondary-button full-width provider-save-button" id="saveTranscriptionSettings" type="button">
+              <span class="material-symbols-rounded" aria-hidden="true">check_circle</span>
+              Save provider settings
+            </button>
             <button class="primary-button full-width transcribe-button" id="transcribeButton" type="button" disabled>
               <span class="material-symbols-rounded" aria-hidden="true">video_library</span>
               Generate SRT
@@ -324,6 +430,7 @@
               <span class="material-symbols-rounded" aria-hidden="true">download</span>
               Download SRT
             </a>
+            <div class="transcript-export-links is-hidden" id="transcriptExportLinks"></div>
           </section>
 
           <section class="inspector-section">
@@ -420,7 +527,8 @@
         maxUpload: {{ max_upload_label|tojson }},
         csrfToken: {{ csrf_token()|tojson }},
         user: {{ user.as_dict()|tojson }},
-        transcriptionModels: {{ transcription_models|tojson }}
+        transcriptionModels: {{ transcription_models|tojson }},
+        elevenlabsModels: {{ elevenlabs_models|tojson }}
       };
     </script>
     <script src="/assets/reelscope.js" defer></script>

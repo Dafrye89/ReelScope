@@ -88,7 +88,8 @@ body {
 
 button,
 input,
-select {
+select,
+textarea {
   color: inherit;
   font: inherit;
 }
@@ -105,7 +106,8 @@ button:disabled {
 
 button:focus-visible,
 input:focus-visible,
-select:focus-visible {
+select:focus-visible,
+textarea:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
@@ -1359,6 +1361,145 @@ html[data-theme="light"] .grid-selection-bar {
   font-size: 10px;
   line-height: 1.45;
   margin: 7px 0 0;
+}
+
+.provider-settings {
+  border-top: 1px solid var(--border);
+  margin-top: 16px;
+  padding-top: 2px;
+}
+
+.inspector-panel input:not([type="checkbox"]):not([type="range"]),
+.inspector-panel textarea {
+  background: var(--surface-raised);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  min-height: 42px;
+  padding: 10px 12px;
+  resize: vertical;
+  width: 100%;
+}
+
+.credential-row {
+  align-items: center;
+  display: grid;
+  gap: 8px;
+  grid-template-columns: minmax(0, 1fr) 42px;
+}
+
+.credential-row .icon-button {
+  height: 42px;
+  width: 42px;
+}
+
+.advanced-settings {
+  background: var(--surface-soft);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  margin-top: 16px;
+  overflow: hidden;
+}
+
+.advanced-settings summary {
+  color: var(--text-strong);
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 700;
+  list-style-position: inside;
+  padding: 12px;
+}
+
+.advanced-settings[open] summary {
+  border-bottom: 1px solid var(--border);
+}
+
+.advanced-settings-body {
+  padding: 0 12px 14px;
+}
+
+.toggle-stack {
+  display: grid;
+  gap: 9px;
+  margin-top: 14px;
+}
+
+.toggle-stack label,
+.format-options label,
+.settings-pair label {
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.toggle-stack label,
+.format-options label {
+  align-items: flex-start;
+  display: flex;
+  gap: 8px;
+}
+
+.toggle-stack input[type="checkbox"],
+.format-options input[type="checkbox"] {
+  accent-color: var(--accent);
+  flex: 0 0 auto;
+  height: 15px;
+  margin: 0;
+  width: 15px;
+}
+
+.cost-note {
+  color: var(--warning);
+  font-size: 9px;
+  margin-left: 3px;
+}
+
+.settings-pair {
+  display: grid;
+  gap: 9px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin-top: 14px;
+}
+
+.settings-pair label {
+  display: grid;
+  gap: 6px;
+}
+
+.settings-pair input:not([type="checkbox"]) {
+  min-width: 0;
+}
+
+.format-options {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin: 16px 0 0;
+  padding: 10px;
+}
+
+.format-options legend {
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 700;
+  padding: 0 5px;
+}
+
+.provider-save-button {
+  margin-top: 16px;
+}
+
+.transcript-export-links {
+  display: grid;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.transcript-export-links a {
+  font-size: 10px;
+  justify-content: flex-start;
 }
 
 .transcribe-button {

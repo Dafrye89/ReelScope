@@ -18,12 +18,18 @@ from pathlib import Path
 from typing import Literal
 from uuid import uuid4
 
+from cryptography.fernet import Fernet, InvalidToken
 from flask import Flask, g, jsonify, redirect, render_template, request, send_file, send_from_directory, session, url_for
 from werkzeug.datastructures import FileStorage
 from werkzeug.exceptions import RequestEntityTooLarge
 from werkzeug.utils import secure_filename
 
 from auth_store import AuthStore, User
+from elevenlabs_transcriber import available_models as available_elevenlabs_models
+from elevenlabs_transcriber import default_settings as default_elevenlabs_settings
+from elevenlabs_transcriber import transcribe_to_srt as transcribe_with_elevenlabs
+from elevenlabs_transcriber import validate_api_key as validate_elevenlabs_api_key
+from elevenlabs_transcriber import validate_settings as validate_elevenlabs_settings
 from frame_extractor import ExtractResult, extract_frames
 from transcriber import MODELS as TRANSCRIPTION_MODELS
 from transcriber import available_models, transcribe_to_srt
@@ -51,7 +57,27 @@ RESOURCE_DIR = Path(getattr(sys, "_MEIPASS", APP_DIR))
 DATA_DIR = Path(os.environ.get("VIDEO_FRAMES_DATA_DIR", str(APP_DIR / "web_data"))).resolve()
 JOBS_DIR = DATA_DIR / "jobs"
 MODEL_CACHE_DIR = DATA_DIR / "models"
+
+
+def _load_or_create_credential_cipher() -> Fernet:
+    configured = os.environ.get("REELSCOPE_CREDENTIAL_KEY", "").strip()
+    if configured:
+        return Fernet(configured.encode("ascii"))
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    key_path = DATA_DIR / ".credential_key"
+    if key_path.is_file():
+        return Fernet(key_path.read_bytes().strip())
+    generated = Fernet.generate_key()
+    key_path.write_bytes(generated)
+    try:
+        key_path.chmod(0o600)
+    except OSError:
+        pass
+    return Fernet(generated)
+
+
 auth_store = AuthStore(DATA_DIR / "reelscope.sqlite3")
+credential_cipher = _load_or_create_credential_cipher()
 
 
 def _read_max_upload_mb() -> int | None:
@@ -182,6 +208,98 @@ def _transcription_status_path(job_id: str) -> Path:
 
 def _transcript_path(job_id: str) -> Path:
     return _job_dir(job_id) / "transcript.srt"
+
+
+def _default_account_transcription_settings() -> dict:
+    return {
+        "provider": "local",
+        "local": {"model": "whisper-turbo", "language": "auto"},
+        "elevenlabs": default_elevenlabs_settings(),
+    }
+
+
+def _account_transcription_settings(user_id: int, *, include_key: bool = False) -> dict:
+    defaults = _default_account_transcription_settings()
+    stored = auth_store.get_transcription_settings(user_id)
+    if stored is None:
+        result = {**defaults, "api_key_configured": False, "api_key_suffix": ""}
+        if include_key:
+            result["api_key"] = None
+        return result
+    try:
+        decoded = json.loads(stored["settings_json"])
+    except (TypeError, json.JSONDecodeError):
+        decoded = {}
+    if not isinstance(decoded, dict):
+        decoded = {}
+    provider = str(stored.get("provider") or decoded.get("provider") or "local")
+    if provider not in {"local", "elevenlabs"}:
+        provider = "local"
+    local = decoded.get("local") if isinstance(decoded.get("local"), dict) else {}
+    local_model = str(local.get("model") or "whisper-turbo")
+    if local_model not in TRANSCRIPTION_MODELS:
+        local_model = "whisper-turbo"
+    local_language = str(local.get("language") or "auto").strip().lower() or "auto"
+    try:
+        elevenlabs = validate_elevenlabs_settings(decoded.get("elevenlabs"))
+    except ValueError:
+        elevenlabs = default_elevenlabs_settings()
+
+    api_key = None
+    encrypted = stored.get("elevenlabs_api_key_encrypted")
+    if encrypted:
+        try:
+            api_key = credential_cipher.decrypt(bytes(encrypted)).decode("utf-8")
+        except (InvalidToken, UnicodeDecodeError, ValueError):
+            api_key = None
+    result = {
+        "provider": provider,
+        "local": {"model": local_model, "language": local_language},
+        "elevenlabs": elevenlabs,
+        "api_key_configured": bool(api_key),
+        "api_key_suffix": api_key[-4:] if api_key else "",
+        "updated_utc": stored.get("updated_utc"),
+    }
+    if include_key:
+        result["api_key"] = api_key
+    return result
+
+
+def _save_account_transcription_settings(
+    user_id: int,
+    payload: dict,
+    *,
+    new_api_key: str | None = None,
+) -> dict:
+    current = _account_transcription_settings(user_id, include_key=True)
+    provider = str(payload.get("provider") or current["provider"])
+    if provider not in {"local", "elevenlabs"}:
+        raise ValueError("unknown transcription provider")
+
+    raw_local = payload.get("local") if isinstance(payload.get("local"), dict) else current["local"]
+    local_model = str(raw_local.get("model") or "whisper-turbo")
+    if local_model not in TRANSCRIPTION_MODELS:
+        raise ValueError("unknown local transcription model")
+    local_language = str(raw_local.get("language") or "auto").strip().lower() or "auto"
+    elevenlabs = validate_elevenlabs_settings(payload.get("elevenlabs", current["elevenlabs"]))
+
+    api_key = new_api_key.strip() if isinstance(new_api_key, str) and new_api_key.strip() else current.get("api_key")
+    if provider == "elevenlabs" and not api_key:
+        raise ValueError("save an ElevenLabs API key before selecting the cloud provider")
+    encrypted = credential_cipher.encrypt(api_key.encode("utf-8")) if api_key else None
+    saved_settings = {
+        "provider": provider,
+        "local": {"model": local_model, "language": local_language},
+        "elevenlabs": elevenlabs,
+    }
+    auth_store.save_transcription_settings(
+        user_id,
+        provider,
+        json.dumps(saved_settings, separators=(",", ":"), sort_keys=True),
+        encrypted,
+        _utc_now_iso(),
+    )
+    return _account_transcription_settings(user_id)
 
 
 def _read_transcription_status(job_id: str) -> dict:
@@ -357,6 +475,15 @@ def _job_payload(job: Job, *, include_frames: bool) -> dict:
     payload["video_url"] = f"/jobs/{job.id}/video" if video_path is not None else None
     transcription = _read_transcription_status(job.id)
     transcription["download_url"] = f"/api/jobs/{job.id}/transcript.srt" if transcription.get("state") == "done" else None
+    if transcription.get("state") == "done" and isinstance(transcription.get("additional_formats"), list):
+        transcription["additional_formats"] = [
+            {
+                **item,
+                "download_url": f"/api/jobs/{job.id}/transcript-export/{item['filename']}",
+            }
+            for item in transcription["additional_formats"]
+            if isinstance(item, dict) and isinstance(item.get("filename"), str)
+        ]
     payload["transcription"] = transcription
     return payload
 
@@ -491,13 +618,23 @@ def _extract_job(job_id: str, video_path: Path, original_filename: str, image_ex
         _update_job(job_id, state="error", error=str(e))
 
 
-def _transcribe_job(job_id: str, model_key: str, language: str | None) -> None:
-    model_info = TRANSCRIPTION_MODELS[model_key]
+def _transcribe_job(job_id: str, user_id: int, settings: dict) -> None:
+    provider = settings["provider"]
+    local_settings = settings["local"]
+    elevenlabs_settings = settings["elevenlabs"]
+    model_key = local_settings["model"] if provider == "local" else elevenlabs_settings["model_id"]
+    model_label = (
+        TRANSCRIPTION_MODELS[model_key].label
+        if provider == "local"
+        else f"ElevenLabs {'Scribe v2' if model_key == 'scribe_v2' else 'Scribe v1'}"
+    )
+    language = local_settings["language"] if provider == "local" else elevenlabs_settings["language_code"]
     queued_status = _read_transcription_status(job_id)
     base_status = {
         "state": "running",
+        "provider": provider,
         "model": model_key,
-        "model_label": model_info.label,
+        "model_label": model_label,
         "language_requested": language or "auto",
         "automatic": bool(queued_status.get("automatic")),
         "started_utc": _utc_now_iso(),
@@ -512,14 +649,27 @@ def _transcribe_job(job_id: str, model_key: str, language: str | None) -> None:
         video_path = _video_path(job_id)
         if video_path is None:
             raise RuntimeError("the original video is unavailable")
-        result = transcribe_to_srt(
-            video_path,
-            _transcript_path(job_id),
-            model_key=model_key,
-            language=language,
-            cache_dir=MODEL_CACHE_DIR,
-            on_progress=on_progress,
-        )
+        if provider == "elevenlabs":
+            account = _account_transcription_settings(user_id, include_key=True)
+            api_key = account.get("api_key")
+            if not api_key:
+                raise RuntimeError("the saved ElevenLabs API key is unavailable")
+            result = transcribe_with_elevenlabs(
+                video_path,
+                _transcript_path(job_id),
+                api_key=api_key,
+                settings=elevenlabs_settings,
+            )
+        else:
+            selected_language = None if language in {"", "auto"} else language
+            result = transcribe_to_srt(
+                video_path,
+                _transcript_path(job_id),
+                model_key=model_key,
+                language=selected_language,
+                cache_dir=MODEL_CACHE_DIR,
+                on_progress=on_progress,
+            )
         _write_transcription_status(
             job_id,
             {
@@ -542,21 +692,34 @@ def _transcribe_job(job_id: str, model_key: str, language: str | None) -> None:
         )
 
 
-def _queue_transcription(job_id: str, model_key: str, language: str | None, *, automatic: bool) -> dict:
-    if model_key not in TRANSCRIPTION_MODELS:
-        raise ValueError("unknown transcription model")
-    model_info = TRANSCRIPTION_MODELS[model_key]
+def _queue_transcription(job_id: str, user_id: int, settings: dict, *, automatic: bool) -> dict:
+    provider = settings["provider"]
+    if provider == "local":
+        model_key = settings["local"]["model"]
+        if model_key not in TRANSCRIPTION_MODELS:
+            raise ValueError("unknown transcription model")
+        model_label = TRANSCRIPTION_MODELS[model_key].label
+        language = settings["local"]["language"]
+    elif provider == "elevenlabs":
+        model_key = settings["elevenlabs"]["model_id"]
+        model_label = f"ElevenLabs {'Scribe v2' if model_key == 'scribe_v2' else 'Scribe v1'}"
+        language = settings["elevenlabs"]["language_code"]
+        if not _account_transcription_settings(user_id, include_key=True).get("api_key"):
+            raise ValueError("save an ElevenLabs API key before using cloud transcription")
+    else:
+        raise ValueError("unknown transcription provider")
     queued = {
         "state": "queued",
+        "provider": provider,
         "model": model_key,
-        "model_label": model_info.label,
+        "model_label": model_label,
         "language_requested": language or "auto",
         "automatic": automatic,
         "queued_utc": _utc_now_iso(),
         "progress_seconds": 0.0,
     }
     _write_transcription_status(job_id, queued)
-    transcription_executor.submit(_transcribe_job, job_id, model_key, language)
+    transcription_executor.submit(_transcribe_job, job_id, user_id, settings)
     return queued
 
 
@@ -566,8 +729,26 @@ def _auto_transcribe_after_extraction(job_id: str) -> None:
         return
     if _read_transcription_status(job_id).get("state") != "idle":
         return
-    model_key = AUTO_TRANSCRIPTION_MODEL if AUTO_TRANSCRIPTION_MODEL in TRANSCRIPTION_MODELS else "whisper-turbo"
-    _queue_transcription(job_id, model_key, None, automatic=True)
+    user_id = auth_store.job_owner_id(job_id)
+    if user_id is None:
+        return
+    settings = _account_transcription_settings(user_id, include_key=True)
+    if auth_store.get_transcription_settings(user_id) is None:
+        model_key = AUTO_TRANSCRIPTION_MODEL if AUTO_TRANSCRIPTION_MODEL in TRANSCRIPTION_MODELS else "whisper-turbo"
+        settings["local"]["model"] = model_key
+    try:
+        _queue_transcription(job_id, user_id, settings, automatic=True)
+    except ValueError as exc:
+        _write_transcription_status(
+            job_id,
+            {
+                "state": "error",
+                "provider": settings.get("provider", "local"),
+                "automatic": True,
+                "completed_utc": _utc_now_iso(),
+                "error": str(exc),
+            },
+        )
 
 
 @app.route("/login", methods=["GET", "POST"])
@@ -631,7 +812,40 @@ def index():
         engine_label=os.environ.get("VIDEO_FRAMES_ENGINE", "CPU").upper(),
         user=g.user,
         transcription_models=available_models(),
+        elevenlabs_models=available_elevenlabs_models(),
     )
+
+
+@app.route("/api/account/transcription-settings", methods=["GET", "PUT", "DELETE"])
+@login_required
+def account_transcription_settings():
+    if request.method == "GET":
+        return jsonify(_account_transcription_settings(g.user.id))
+    if request.method == "DELETE":
+        auth_store.delete_elevenlabs_api_key(g.user.id, _utc_now_iso())
+        return jsonify(_account_transcription_settings(g.user.id))
+
+    payload = request.get_json(silent=True) or {}
+    if not isinstance(payload, dict):
+        return jsonify({"error": "invalid transcription settings"}), 400
+    new_api_key = str(payload.get("api_key") or "").strip()
+    key_details = None
+    try:
+        if new_api_key:
+            key_details = validate_elevenlabs_api_key(new_api_key)
+        saved = _save_account_transcription_settings(
+            g.user.id,
+            payload,
+            new_api_key=new_api_key or None,
+        )
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except RuntimeError as exc:
+        return jsonify({"error": str(exc)}), 502
+    if key_details:
+        saved["elevenlabs_tier"] = key_details.get("tier")
+        saved["key_validated"] = True
+    return jsonify(saved)
 
 
 @app.errorhandler(RequestEntityTooLarge)
@@ -902,6 +1116,15 @@ def get_transcription(job_id: str):
         return jsonify({"error": "job not found"}), 404
     payload = _read_transcription_status(job_id)
     payload["download_url"] = f"/api/jobs/{job_id}/transcript.srt" if payload.get("state") == "done" else None
+    if payload.get("state") == "done" and isinstance(payload.get("additional_formats"), list):
+        payload["additional_formats"] = [
+            {
+                **item,
+                "download_url": f"/api/jobs/{job_id}/transcript-export/{item['filename']}",
+            }
+            for item in payload["additional_formats"]
+            if isinstance(item, dict) and isinstance(item.get("filename"), str)
+        ]
     return jsonify(payload)
 
 
@@ -917,13 +1140,38 @@ def start_transcription(job_id: str):
     if current.get("state") in {"queued", "running"}:
         return jsonify({"error": "transcription is already running"}), 409
     payload = request.get_json(silent=True) or {}
-    model_key = str(payload.get("model") or "whisper-turbo")
-    if model_key not in TRANSCRIPTION_MODELS:
-        return jsonify({"error": "unknown transcription model"}), 400
-    raw_language = str(payload.get("language") or "").strip().lower()
-    language = None if raw_language in {"", "auto"} else raw_language
-    queued = _queue_transcription(job_id, model_key, language, automatic=False)
+    settings = _account_transcription_settings(g.user.id, include_key=True)
+    # Preserve the original local-model request shape for older clients.
+    if isinstance(payload, dict) and payload.get("model"):
+        settings["provider"] = "local"
+        settings["local"] = {
+            "model": str(payload.get("model") or "whisper-turbo"),
+            "language": str(payload.get("language") or "auto").strip().lower() or "auto",
+        }
+    try:
+        queued = _queue_transcription(job_id, g.user.id, settings, automatic=False)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
     return jsonify(queued), 202
+
+
+@app.get("/api/jobs/<job_id>/transcript-export/<filename>")
+@login_required
+def download_transcript_export(job_id: str, filename: str):
+    job = _owned_job(job_id)
+    status = _read_transcription_status(job_id)
+    allowed = {
+        str(item.get("filename"))
+        for item in status.get("additional_formats") or []
+        if isinstance(item, dict) and isinstance(item.get("filename"), str)
+    }
+    if job is None or status.get("state") != "done" or filename not in allowed:
+        return jsonify({"error": "transcript export not found"}), 404
+    export_path = _job_dir(job_id) / filename
+    if not export_path.is_file() or export_path.parent != _job_dir(job_id):
+        return jsonify({"error": "transcript export not found"}), 404
+    download_name = f"{Path(job.filename).stem or 'transcript'}-{filename}"
+    return send_file(export_path, as_attachment=True, download_name=download_name)
 
 
 @app.route("/api/jobs/<job_id>/transcript", methods=["GET", "PUT"])

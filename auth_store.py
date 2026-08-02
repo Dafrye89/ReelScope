@@ -60,6 +60,14 @@ class AuthStore:
                 );
 
                 CREATE INDEX IF NOT EXISTS job_owners_user_id_idx ON job_owners(user_id);
+
+                CREATE TABLE IF NOT EXISTS user_transcription_settings (
+                    user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+                    provider TEXT NOT NULL DEFAULT 'local',
+                    settings_json TEXT NOT NULL DEFAULT '{}',
+                    elevenlabs_api_key_encrypted BLOB,
+                    updated_utc TEXT NOT NULL
+                );
                 """
             )
 
@@ -176,3 +184,60 @@ class AuthStore:
                 (user_id, job_id),
             ).fetchone()
         return row is not None
+
+    def job_owner_id(self, job_id: str) -> int | None:
+        with closing(self._connect()) as connection, connection:
+            row = connection.execute("SELECT user_id FROM job_owners WHERE job_id = ?", (job_id,)).fetchone()
+        return int(row["user_id"]) if row is not None else None
+
+    def get_transcription_settings(self, user_id: int) -> dict | None:
+        with closing(self._connect()) as connection, connection:
+            row = connection.execute(
+                """
+                SELECT provider, settings_json, elevenlabs_api_key_encrypted, updated_utc
+                FROM user_transcription_settings WHERE user_id = ?
+                """,
+                (user_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        return {
+            "provider": str(row["provider"]),
+            "settings_json": str(row["settings_json"]),
+            "elevenlabs_api_key_encrypted": row["elevenlabs_api_key_encrypted"],
+            "updated_utc": str(row["updated_utc"]),
+        }
+
+    def save_transcription_settings(
+        self,
+        user_id: int,
+        provider: str,
+        settings_json: str,
+        api_key_encrypted: bytes | None,
+        updated_utc: str,
+    ) -> None:
+        with closing(self._connect()) as connection, connection:
+            connection.execute(
+                """
+                INSERT INTO user_transcription_settings (
+                    user_id, provider, settings_json, elevenlabs_api_key_encrypted, updated_utc
+                ) VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(user_id) DO UPDATE SET
+                    provider = excluded.provider,
+                    settings_json = excluded.settings_json,
+                    elevenlabs_api_key_encrypted = excluded.elevenlabs_api_key_encrypted,
+                    updated_utc = excluded.updated_utc
+                """,
+                (user_id, provider, settings_json, api_key_encrypted, updated_utc),
+            )
+
+    def delete_elevenlabs_api_key(self, user_id: int, updated_utc: str) -> None:
+        with closing(self._connect()) as connection, connection:
+            connection.execute(
+                """
+                UPDATE user_transcription_settings
+                SET provider = 'local', elevenlabs_api_key_encrypted = NULL, updated_utc = ?
+                WHERE user_id = ?
+                """,
+                (updated_utc, user_id),
+            )

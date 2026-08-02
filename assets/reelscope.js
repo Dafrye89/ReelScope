@@ -68,11 +68,46 @@
     transcriptionModel: $("transcriptionModel"),
     transcriptionModelHelp: $("transcriptionModelHelp"),
     transcriptionLanguage: $("transcriptionLanguage"),
+    transcriptionProvider: $("transcriptionProvider"),
+    localTranscriptionSettings: $("localTranscriptionSettings"),
+    elevenLabsSettings: $("elevenLabsSettings"),
+    elevenLabsApiKey: $("elevenLabsApiKey"),
+    elevenLabsKeyStatus: $("elevenLabsKeyStatus"),
+    removeElevenLabsKey: $("removeElevenLabsKey"),
+    elevenLabsModel: $("elevenLabsModel"),
+    elevenLabsModelHelp: $("elevenLabsModelHelp"),
+    elevenLabsLanguage: $("elevenLabsLanguage"),
+    elevenLabsTimestamps: $("elevenLabsTimestamps"),
+    elevenLabsAudioEvents: $("elevenLabsAudioEvents"),
+    elevenLabsNoVerbatim: $("elevenLabsNoVerbatim"),
+    elevenLabsDiarize: $("elevenLabsDiarize"),
+    elevenLabsSpeakerLabels: $("elevenLabsSpeakerLabels"),
+    elevenLabsSpeakerLibrary: $("elevenLabsSpeakerLibrary"),
+    elevenLabsSpeakerRoles: $("elevenLabsSpeakerRoles"),
+    elevenLabsMultiChannel: $("elevenLabsMultiChannel"),
+    elevenLabsLogging: $("elevenLabsLogging"),
+    elevenLabsNumSpeakers: $("elevenLabsNumSpeakers"),
+    elevenLabsDiarizationThreshold: $("elevenLabsDiarizationThreshold"),
+    elevenLabsMultiChannelStyle: $("elevenLabsMultiChannelStyle"),
+    elevenLabsTemperature: $("elevenLabsTemperature"),
+    elevenLabsSeed: $("elevenLabsSeed"),
+    elevenLabsKeyterms: $("elevenLabsKeyterms"),
+    elevenLabsEntityDetection: $("elevenLabsEntityDetection"),
+    elevenLabsEntityRedaction: $("elevenLabsEntityRedaction"),
+    elevenLabsRedactionMode: $("elevenLabsRedactionMode"),
+    elevenLabsExportSpeakers: $("elevenLabsExportSpeakers"),
+    elevenLabsExportTimestamps: $("elevenLabsExportTimestamps"),
+    elevenLabsExportSilence: $("elevenLabsExportSilence"),
+    elevenLabsExportDuration: $("elevenLabsExportDuration"),
+    elevenLabsExportChars: $("elevenLabsExportChars"),
+    elevenLabsExportLineChars: $("elevenLabsExportLineChars"),
+    saveTranscriptionSettings: $("saveTranscriptionSettings"),
     transcribeButton: $("transcribeButton"),
     transcriptionStatus: $("transcriptionStatus"),
     transcriptionStatusText: $("transcriptionStatusText"),
     downloadTranscript: $("downloadTranscript"),
     downloadTranscriptOverlay: $("downloadTranscriptOverlay"),
+    transcriptExportLinks: $("transcriptExportLinks"),
     transcriptWorkspace: $("transcriptWorkspace"),
     transcriptCues: $("transcriptCues"),
     transcriptCueCount: $("transcriptCueCount"),
@@ -108,6 +143,8 @@
     activeTranscriptCue: -1,
     transcriptDirty: false,
     selectedGridFrames: new Set(),
+    transcriptionSettingsLoaded: false,
+    elevenLabsKeyConfigured: false,
   };
 
   function icon(name) {
@@ -805,24 +842,223 @@
     if (hasFrames && state.viewMode !== "grid") renderCurrentFrame();
   }
 
+  function nullableNumber(input) {
+    const value = String(input.value || "").trim();
+    return value === "" ? null : Number(value);
+  }
+
+  function splitSettingLines(value) {
+    return String(value || "")
+      .replace(/\r/g, "\n")
+      .split(/[\n,]+/)
+      .map((item) => item.trim())
+      .filter(Boolean);
+  }
+
+  function setNullableValue(input, value) {
+    input.value = value === null || value === undefined ? "" : String(value);
+  }
+
+  function selectedElevenLabsFormats() {
+    return Array.from(document.querySelectorAll('input[name="elevenLabsFormat"]:checked')).map((input) => input.value);
+  }
+
+  function collectElevenLabsSettings() {
+    const combinedMultiChannel = elements.elevenLabsMultiChannel.checked && elements.elevenLabsMultiChannelStyle.value === "combined";
+    const activeDiarization = elements.elevenLabsDiarize.checked && !elements.elevenLabsMultiChannel.checked;
+    const speakerCount = activeDiarization ? nullableNumber(elements.elevenLabsNumSpeakers) : null;
+    return {
+      model_id: elements.elevenLabsModel.value,
+      language_code: elements.elevenLabsLanguage.value.trim().toLowerCase() || "auto",
+      tag_audio_events: elements.elevenLabsAudioEvents.checked,
+      timestamps_granularity: elements.elevenLabsTimestamps.value,
+      diarize: activeDiarization,
+      num_speakers: speakerCount,
+      diarization_threshold: activeDiarization && speakerCount === null ? nullableNumber(elements.elevenLabsDiarizationThreshold) : null,
+      no_verbatim: elements.elevenLabsNoVerbatim.checked,
+      use_speaker_library: elements.elevenLabsSpeakerLibrary.checked && !elements.elevenLabsMultiChannel.checked,
+      detect_speaker_roles: elements.elevenLabsSpeakerRoles.checked && !elements.elevenLabsMultiChannel.checked,
+      include_speaker_labels: elements.elevenLabsSpeakerLabels.checked,
+      temperature: nullableNumber(elements.elevenLabsTemperature),
+      seed: nullableNumber(elements.elevenLabsSeed),
+      use_multi_channel: elements.elevenLabsMultiChannel.checked,
+      multichannel_output_style: elements.elevenLabsMultiChannelStyle.value,
+      entity_detection: combinedMultiChannel ? [] : splitSettingLines(elements.elevenLabsEntityDetection.value),
+      entity_redaction: combinedMultiChannel ? [] : splitSettingLines(elements.elevenLabsEntityRedaction.value),
+      entity_redaction_mode: elements.elevenLabsRedactionMode.value,
+      keyterms: splitSettingLines(elements.elevenLabsKeyterms.value),
+      enable_logging: elements.elevenLabsLogging.checked,
+      additional_formats: selectedElevenLabsFormats(),
+      export_include_speakers: elements.elevenLabsExportSpeakers.checked,
+      export_include_timestamps: elements.elevenLabsExportTimestamps.checked,
+      export_segment_on_silence: nullableNumber(elements.elevenLabsExportSilence),
+      export_max_segment_duration: nullableNumber(elements.elevenLabsExportDuration),
+      export_max_segment_chars: nullableNumber(elements.elevenLabsExportChars),
+      export_max_characters_per_line: nullableNumber(elements.elevenLabsExportLineChars),
+    };
+  }
+
+  function collectAccountTranscriptionSettings() {
+    return {
+      provider: elements.transcriptionProvider.value,
+      api_key: elements.elevenLabsApiKey.value.trim(),
+      local: {
+        model: elements.transcriptionModel.value,
+        language: elements.transcriptionLanguage.value,
+      },
+      elevenlabs: collectElevenLabsSettings(),
+    };
+  }
+
+  function syncElevenLabsDependencies() {
+    const multiChannel = elements.elevenLabsMultiChannel.checked;
+    const diarize = elements.elevenLabsDiarize.checked && !multiChannel;
+    const fixedSpeakers = String(elements.elevenLabsNumSpeakers.value || "").trim() !== "";
+    elements.elevenLabsDiarize.disabled = multiChannel;
+    elements.elevenLabsNumSpeakers.disabled = !diarize;
+    elements.elevenLabsDiarizationThreshold.disabled = !diarize || fixedSpeakers;
+    elements.elevenLabsSpeakerLibrary.disabled = !diarize;
+    elements.elevenLabsSpeakerRoles.disabled = !diarize || multiChannel;
+    elements.elevenLabsMultiChannelStyle.disabled = !multiChannel;
+    const entityDisabled = multiChannel && elements.elevenLabsMultiChannelStyle.value === "combined";
+    elements.elevenLabsEntityDetection.disabled = entityDisabled;
+    elements.elevenLabsEntityRedaction.disabled = entityDisabled;
+    elements.elevenLabsRedactionMode.disabled = entityDisabled || !elements.elevenLabsEntityRedaction.value.trim();
+    const scribeV2 = elements.elevenLabsModel.value === "scribe_v2";
+    elements.elevenLabsNoVerbatim.disabled = !scribeV2;
+    if (!scribeV2) elements.elevenLabsNoVerbatim.checked = false;
+  }
+
+  function syncTranscriptionProvider() {
+    const isElevenLabs = elements.transcriptionProvider.value === "elevenlabs";
+    elements.localTranscriptionSettings.classList.toggle("is-hidden", isElevenLabs);
+    elements.elevenLabsSettings.classList.toggle("is-hidden", !isElevenLabs);
+    syncElevenLabsDependencies();
+  }
+
+  function applyAccountTranscriptionSettings(payload) {
+    const local = payload?.local || {};
+    const cloud = payload?.elevenlabs || {};
+    elements.transcriptionProvider.value = payload?.provider === "elevenlabs" ? "elevenlabs" : "local";
+    elements.transcriptionModel.value = local.model || "whisper-turbo";
+    elements.transcriptionLanguage.value = local.language || "auto";
+    elements.elevenLabsModel.value = cloud.model_id || "scribe_v2";
+    elements.elevenLabsLanguage.value = cloud.language_code || "auto";
+    elements.elevenLabsTimestamps.value = cloud.timestamps_granularity || "word";
+    elements.elevenLabsAudioEvents.checked = cloud.tag_audio_events !== false;
+    elements.elevenLabsNoVerbatim.checked = Boolean(cloud.no_verbatim);
+    elements.elevenLabsDiarize.checked = Boolean(cloud.diarize);
+    elements.elevenLabsSpeakerLabels.checked = Boolean(cloud.include_speaker_labels);
+    elements.elevenLabsSpeakerLibrary.checked = Boolean(cloud.use_speaker_library);
+    elements.elevenLabsSpeakerRoles.checked = Boolean(cloud.detect_speaker_roles);
+    elements.elevenLabsMultiChannel.checked = Boolean(cloud.use_multi_channel);
+    elements.elevenLabsLogging.checked = cloud.enable_logging !== false;
+    setNullableValue(elements.elevenLabsNumSpeakers, cloud.num_speakers);
+    setNullableValue(elements.elevenLabsDiarizationThreshold, cloud.diarization_threshold);
+    elements.elevenLabsMultiChannelStyle.value = cloud.multichannel_output_style || "combined";
+    setNullableValue(elements.elevenLabsTemperature, cloud.temperature);
+    setNullableValue(elements.elevenLabsSeed, cloud.seed);
+    elements.elevenLabsKeyterms.value = (cloud.keyterms || []).join("\n");
+    elements.elevenLabsEntityDetection.value = (cloud.entity_detection || []).join(", ");
+    elements.elevenLabsEntityRedaction.value = (cloud.entity_redaction || []).join(", ");
+    elements.elevenLabsRedactionMode.value = cloud.entity_redaction_mode || "enumerated_entity_type";
+    document.querySelectorAll('input[name="elevenLabsFormat"]').forEach((input) => {
+      input.checked = (cloud.additional_formats || []).includes(input.value);
+    });
+    elements.elevenLabsExportSpeakers.checked = cloud.export_include_speakers !== false;
+    elements.elevenLabsExportTimestamps.checked = cloud.export_include_timestamps !== false;
+    setNullableValue(elements.elevenLabsExportSilence, cloud.export_segment_on_silence);
+    setNullableValue(elements.elevenLabsExportDuration, cloud.export_max_segment_duration);
+    setNullableValue(elements.elevenLabsExportChars, cloud.export_max_segment_chars);
+    setNullableValue(elements.elevenLabsExportLineChars, cloud.export_max_characters_per_line);
+    state.elevenLabsKeyConfigured = Boolean(payload?.api_key_configured);
+    elements.elevenLabsApiKey.value = "";
+    elements.elevenLabsApiKey.placeholder = state.elevenLabsKeyConfigured
+      ? `Saved key ending in ${payload.api_key_suffix || "••••"}`
+      : "Paste a new ElevenLabs key";
+    elements.removeElevenLabsKey.disabled = !state.elevenLabsKeyConfigured;
+    elements.elevenLabsKeyStatus.textContent = state.elevenLabsKeyConfigured
+      ? `Connected${payload.elevenlabs_tier ? ` · ${payload.elevenlabs_tier} plan` : ""}. The encrypted key remains on this ReelScope server.`
+      : "No key saved. Keys are encrypted on this ReelScope server and are never returned to the browser.";
+    const localModel = (config.transcriptionModels || []).find((model) => model.key === elements.transcriptionModel.value);
+    elements.transcriptionModelHelp.textContent = localModel?.description || "Local timestamped speech-to-text.";
+    const cloudModel = (config.elevenlabsModels || []).find((model) => model.id === elements.elevenLabsModel.value);
+    elements.elevenLabsModelHelp.textContent = cloudModel?.description || "ElevenLabs batch speech-to-text.";
+    syncTranscriptionProvider();
+    state.transcriptionSettingsLoaded = true;
+  }
+
+  async function loadAccountTranscriptionSettings() {
+    try {
+      applyAccountTranscriptionSettings(await fetchJson("/api/account/transcription-settings"));
+    } catch (error) {
+      showToast(`Could not load transcription settings: ${error.message}`, "error");
+    }
+  }
+
+  async function saveAccountTranscriptionSettings({ silent = false } = {}) {
+    elements.saveTranscriptionSettings.disabled = true;
+    try {
+      const saved = await fetchJson("/api/account/transcription-settings", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(collectAccountTranscriptionSettings()),
+      });
+      applyAccountTranscriptionSettings(saved);
+      if (!silent) showToast("Transcription provider settings saved.");
+      return saved;
+    } finally {
+      elements.saveTranscriptionSettings.disabled = false;
+    }
+  }
+
+  async function removeElevenLabsApiKey() {
+    if (!state.elevenLabsKeyConfigured) return;
+    if (!window.confirm("Remove your saved ElevenLabs API key and switch automatic transcription back to local?")) return;
+    try {
+      const saved = await fetchJson("/api/account/transcription-settings", { method: "DELETE" });
+      applyAccountTranscriptionSettings(saved);
+      showToast("ElevenLabs API key removed. Automatic transcription is local again.");
+    } catch (error) {
+      showToast(error.message, "error");
+    }
+  }
+
+  function renderAdditionalTranscriptExports(status) {
+    elements.transcriptExportLinks.replaceChildren();
+    const exports = Array.isArray(status?.additional_formats) ? status.additional_formats : [];
+    exports.forEach((item) => {
+      if (!item?.download_url) return;
+      const link = document.createElement("a");
+      link.className = "secondary-button";
+      link.href = item.download_url;
+      link.download = "";
+      link.append(icon("download"), document.createTextNode(` Download ElevenLabs ${String(item.format || "export").toUpperCase()}`));
+      elements.transcriptExportLinks.appendChild(link);
+    });
+    elements.transcriptExportLinks.classList.toggle("is-hidden", elements.transcriptExportLinks.childElementCount === 0);
+  }
+
   function renderTranscription(status = { state: "idle" }) {
     const transcriptionState = status?.state || "idle";
     elements.transcriptionStatus.dataset.state = transcriptionState;
     elements.transcribeButton.disabled = !state.currentJob?.video_available || state.currentJob?.state !== "done" || ["queued", "running"].includes(transcriptionState);
     elements.downloadTranscript.classList.toggle("is-hidden", transcriptionState !== "done");
     elements.downloadTranscriptOverlay.classList.toggle("is-hidden", transcriptionState !== "done");
+    renderAdditionalTranscriptExports(transcriptionState === "done" ? status : null);
     if (transcriptionState === "done") {
       elements.downloadTranscript.href = status.download_url;
       elements.downloadTranscriptOverlay.href = status.download_url;
       const resultCount = status.words ?? status.segments;
       const resultUnit = status.words ? "timestamped words" : "subtitle cues";
-      elements.transcriptionStatusText.textContent = `${status.model_label || "Local model"} created ${formatNumber(resultCount)} ${resultUnit} on ${String(status.device || "local").toUpperCase()}.`;
+      elements.transcriptionStatusText.textContent = `${status.model_label || "Speech model"} created ${formatNumber(resultCount)} ${resultUnit} on ${String(status.device || "local").toUpperCase()}.`;
       elements.transcribeButton.replaceChildren(icon("refresh"), document.createTextNode(" Regenerate SRT"));
       loadTranscript(state.currentJobId);
     } else if (transcriptionState === "running" || transcriptionState === "queued") {
       const progress = Number(status.progress_seconds || 0);
       const prefix = status.automatic ? "Automatically transcribing" : "Transcribing";
-      elements.transcriptionStatusText.textContent = progress > 0 ? `${prefix}… ${progress.toFixed(1)} seconds processed.` : `${prefix}… loading the local model and preparing audio.`;
+      const preparing = status.provider === "elevenlabs" ? "securely sending the original video to ElevenLabs" : "loading the local model and preparing audio";
+      elements.transcriptionStatusText.textContent = progress > 0 ? `${prefix}… ${progress.toFixed(1)} seconds processed.` : `${prefix}… ${preparing}.`;
       elements.transcribeButton.replaceChildren(icon("refresh"), document.createTextNode(" Transcribing"));
       resetTranscript(state.currentJobId);
     } else if (transcriptionState === "error") {
@@ -864,13 +1100,11 @@
     if (!state.currentJobId) return;
     elements.transcribeButton.disabled = true;
     try {
+      await saveAccountTranscriptionSettings({ silent: true });
       const status = await fetchJson(`/api/jobs/${encodeURIComponent(state.currentJobId)}/transcribe`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          model: elements.transcriptionModel.value,
-          language: elements.transcriptionLanguage.value,
-        }),
+        body: JSON.stringify({}),
       });
       state.currentJob.transcription = status;
       renderTranscription(status);
@@ -1142,6 +1376,15 @@
       renderGrid();
     });
     elements.transcribeButton.addEventListener("click", startTranscription);
+    elements.saveTranscriptionSettings.addEventListener("click", async () => {
+      try {
+        await saveAccountTranscriptionSettings();
+      } catch (error) {
+        showToast(error.message, "error");
+      }
+    });
+    elements.removeElevenLabsKey.addEventListener("click", removeElevenLabsApiKey);
+    elements.transcriptionProvider.addEventListener("change", syncTranscriptionProvider);
     elements.copyTranscript.addEventListener("click", copyTranscriptText);
     elements.saveTranscript.addEventListener("click", saveTranscriptEdits);
     elements.transcriptionModel.addEventListener("change", () => {
@@ -1150,6 +1393,18 @@
       elements.transcriptionLanguage.disabled = elements.transcriptionModel.value === "distil-large-v3.5";
       if (elements.transcriptionLanguage.disabled) elements.transcriptionLanguage.value = "en";
     });
+    [
+      elements.elevenLabsModel,
+      elements.elevenLabsDiarize,
+      elements.elevenLabsNumSpeakers,
+      elements.elevenLabsMultiChannel,
+      elements.elevenLabsMultiChannelStyle,
+      elements.elevenLabsEntityRedaction,
+    ].forEach((control) => control.addEventListener("change", () => {
+      const selected = (config.elevenlabsModels || []).find((model) => model.id === elements.elevenLabsModel.value);
+      elements.elevenLabsModelHelp.textContent = selected?.description || "ElevenLabs batch speech-to-text.";
+      syncElevenLabsDependencies();
+    }));
     elements.sourceVideo.addEventListener("timeupdate", () => {
       if (state.viewMode !== "video" || !state.frames.length) return;
       const index = nearestFrameIndex(elements.sourceVideo.currentTime);
@@ -1217,7 +1472,7 @@
     initializeTheme();
     bindEvents();
     setStatus("Ready", `${config.engine} extraction is available. Completed jobs remain in your library.`, "neutral");
-    await refreshHistory(true);
+    await Promise.all([loadAccountTranscriptionSettings(), refreshHistory(true)]);
   }
 
   initialize();
