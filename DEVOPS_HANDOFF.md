@@ -1,7 +1,9 @@
 # ReelScope DevOps Handoff
 
-Last verified: 2026-08-01  
-Repository: <https://github.com/Dafrye89/ReelScope>  
+Last verified: 2026-08-01
+
+Repository: <https://github.com/Dafrye89/ReelScope>
+
 Verified commit: `eff25eb` (`agent/auth-video-transcription`, draft PR #1 at the time of writing)
 
 This document describes what ReelScope is, how it behaves, what it stores, and which production concerns are currently unresolved. It is intentionally not an infrastructure runbook.
@@ -313,4 +315,3 @@ A live ElevenLabs Scribe v2 test also completed against a 21.08-second video, re
 | Windows launchers | `run_web.bat`, `run_web_cuda.bat` |
 | Automated tests | `tests/` |
 | CI and release workflows | `.github/workflows/` |
-
