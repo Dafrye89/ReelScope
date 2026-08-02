@@ -52,12 +52,14 @@ class WebAppHistoryTests(unittest.TestCase):
         self.store.assign_job(self.owner.id, self.job_id, "2026-07-31T20:00:00+00:00")
 
         self.jobs_patch = patch.object(web_app, "JOBS_DIR", self.jobs_dir)
+        self.data_patch = patch.object(web_app, "DATA_DIR", self.data_dir)
         self.auth_patch = patch.object(web_app, "auth_store", self.store)
         self.jobs_patch.start()
+        self.data_patch.start()
         self.auth_patch.start()
         with web_app.jobs_lock:
             web_app.jobs.clear()
-        web_app.app.config.update(TESTING=True)
+        web_app.app.config.update(TESTING=True, RATELIMIT_ENABLED=False)
         self.client = web_app.app.test_client()
         self._login_as(self.owner.id)
 
@@ -65,6 +67,7 @@ class WebAppHistoryTests(unittest.TestCase):
         with web_app.jobs_lock:
             web_app.jobs.clear()
         self.auth_patch.stop()
+        self.data_patch.stop()
         self.jobs_patch.stop()
         self.temp_dir.cleanup()
 
@@ -274,6 +277,27 @@ class WebAppHistoryTests(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 302)
         self.assertIsNotNone(self.store.authenticate("new_user", "secure-passphrase"))
+
+    def test_registration_can_be_disabled_for_private_instances(self) -> None:
+        with patch.object(web_app, "ALLOW_REGISTRATION", False):
+            response = self.client.get("/register")
+            login = self.client.get("/login")
+        self.assertEqual(response.status_code, 404)
+        self.assertNotIn("Create an account", login.get_data(as_text=True))
+
+    def test_health_and_browser_security_headers(self) -> None:
+        response = self.client.get("/healthz")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json(), {"status": "ok"})
+        self.assertEqual(response.headers["X-Frame-Options"], "DENY")
+        self.assertIn("object-src 'none'", response.headers["Content-Security-Policy"])
+
+    def test_unrecognized_host_is_rejected_when_allowlist_is_configured(self) -> None:
+        with patch.object(web_app, "TRUSTED_HOSTS", {"reelscope.example.com"}):
+            rejected = self.client.get("/healthz", headers={"Host": "attacker.example"})
+            accepted = self.client.get("/healthz", headers={"Host": "reelscope.example.com"})
+        self.assertEqual(rejected.status_code, 400)
+        self.assertEqual(accepted.status_code, 200)
 
     def test_invalid_job_id_is_rejected(self) -> None:
         response = self.client.get("/api/jobs/not-a-job")

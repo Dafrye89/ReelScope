@@ -521,7 +521,7 @@
     <div class="drawer-backdrop is-hidden" id="drawerBackdrop"></div>
     <div class="toast-region" id="toastRegion" aria-live="polite" aria-atomic="true"></div>
 
-    <script>
+    <script nonce="{{ csp_nonce }}">
       window.REELSCOPE_CONFIG = {
         engine: {{ engine_label|tojson }},
         maxUpload: {{ max_upload_label|tojson }},

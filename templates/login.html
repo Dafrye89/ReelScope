@@ -32,7 +32,9 @@
           <input id="password" name="password" type="password" minlength="8" maxlength="128" autocomplete="current-password" required />
           <button class="primary-button full-width auth-submit" type="submit">Sign in</button>
         </form>
-        <p class="auth-switch">New here? <a href="/register">Create an account</a></p>
+        {% if registration_allowed %}
+          <p class="auth-switch">New here? <a href="/register">Create an account</a></p>
+        {% endif %}
       </section>
     </main>
   </body>

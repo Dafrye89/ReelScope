@@ -20,8 +20,10 @@ from uuid import uuid4
 
 from cryptography.fernet import Fernet, InvalidToken
 from flask import Flask, g, jsonify, redirect, render_template, request, send_file, send_from_directory, session, url_for
+from flask_limiter import Limiter
 from werkzeug.datastructures import FileStorage
 from werkzeug.exceptions import RequestEntityTooLarge
+from werkzeug.middleware.proxy_fix import ProxyFix
 from werkzeug.utils import secure_filename
 
 from auth_store import AuthStore, User
@@ -57,6 +59,13 @@ RESOURCE_DIR = Path(getattr(sys, "_MEIPASS", APP_DIR))
 DATA_DIR = Path(os.environ.get("VIDEO_FRAMES_DATA_DIR", str(APP_DIR / "web_data"))).resolve()
 JOBS_DIR = DATA_DIR / "jobs"
 MODEL_CACHE_DIR = DATA_DIR / "models"
+
+
+def _env_flag(name: str, default: bool = False) -> bool:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _load_or_create_credential_cipher() -> Fernet:
@@ -97,6 +106,13 @@ JOB_ID_RE = re.compile(r"^[0-9a-f]{32}$")
 executor = ThreadPoolExecutor(max_workers=int(os.environ.get("VIDEO_FRAMES_WORKERS", "1")))
 transcription_executor = ThreadPoolExecutor(max_workers=int(os.environ.get("REELSCOPE_TRANSCRIPTION_WORKERS", "1")))
 AUTO_TRANSCRIPTION_MODEL = os.environ.get("REELSCOPE_AUTO_TRANSCRIBE_MODEL", "whisper-turbo")
+ALLOW_REGISTRATION = _env_flag("REELSCOPE_ALLOW_REGISTRATION", True)
+HSTS_ENABLED = _env_flag("REELSCOPE_HSTS")
+TRUSTED_HOSTS = {
+    host.strip().lower()
+    for host in os.environ.get("REELSCOPE_TRUSTED_HOSTS", "").split(",")
+    if host.strip()
+}
 jobs: dict[str, Job] = {}
 jobs_lock = threading.Lock()
 
@@ -106,6 +122,28 @@ app = Flask(
     template_folder=str(RESOURCE_DIR / "templates"),
     static_folder=str(RESOURCE_DIR / "assets"),
     static_url_path="/assets",
+)
+
+proxy_hops = int(os.environ.get("REELSCOPE_PROXY_HOPS", "0"))
+if proxy_hops < 0 or proxy_hops > 2:
+    raise ValueError("REELSCOPE_PROXY_HOPS must be between 0 and 2")
+if proxy_hops:
+    app.wsgi_app = ProxyFix(
+        app.wsgi_app,
+        x_for=proxy_hops,
+        x_proto=proxy_hops,
+        x_host=proxy_hops,
+    )
+
+
+def _rate_limit_key() -> str:
+    return request.remote_addr or "unknown"
+
+
+limiter = Limiter(
+    key_func=_rate_limit_key,
+    app=app,
+    storage_uri=os.environ.get("REELSCOPE_RATE_LIMIT_STORAGE", "memory://"),
 )
 
 
@@ -151,8 +189,21 @@ def _csrf_token() -> str:
 app.jinja_env.globals["csrf_token"] = _csrf_token
 
 
+@app.context_processor
+def public_template_settings():
+    return {
+        "csp_nonce": getattr(g, "csp_nonce", ""),
+        "registration_allowed": ALLOW_REGISTRATION,
+    }
+
+
 @app.before_request
 def load_user_and_validate_request():
+    request_host = request.host.partition(":")[0].strip("[]").lower()
+    if TRUSTED_HOSTS and request_host not in TRUSTED_HOSTS:
+        return "unrecognized host", 400
+
+    g.csp_nonce = secrets.token_urlsafe(24)
     user_id = session.get("user_id")
     g.user = auth_store.get_user(int(user_id)) if isinstance(user_id, int) else None
     if g.user is None and user_id is not None:
@@ -752,6 +803,7 @@ def _auto_transcribe_after_extraction(job_id: str) -> None:
 
 
 @app.route("/login", methods=["GET", "POST"])
+@limiter.limit("10 per minute", methods=["POST"])
 def login():
     if g.user is not None:
         return redirect(url_for("index"))
@@ -775,7 +827,10 @@ def login():
 
 
 @app.route("/register", methods=["GET", "POST"])
+@limiter.limit("3 per hour", methods=["POST"])
 def register():
+    if not ALLOW_REGISTRATION:
+        return "registration is disabled", 404
     if g.user is not None:
         return redirect(url_for("index"))
     error = None
@@ -814,6 +869,18 @@ def index():
         transcription_models=available_models(),
         elevenlabs_models=available_elevenlabs_models(),
     )
+
+
+@app.get("/healthz")
+def healthz():
+    try:
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
+        if not os.access(DATA_DIR, os.R_OK | os.W_OK):
+            raise OSError("data directory is not readable and writable")
+        auth_store.healthcheck()
+    except (OSError, RuntimeError):
+        return jsonify({"status": "unhealthy"}), 503
+    return jsonify({"status": "ok"})
 
 
 @app.route("/api/account/transcription-settings", methods=["GET", "PUT", "DELETE"])
@@ -865,11 +932,22 @@ def add_no_cache_headers(response):
     response.headers["X-Frame-Options"] = "DENY"
     response.headers["Referrer-Policy"] = "no-referrer"
     response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
+    nonce = getattr(g, "csp_nonce", "")
+    response.headers["Content-Security-Policy"] = (
+        "default-src 'self'; "
+        f"script-src 'self' 'nonce-{nonce}'; "
+        "style-src 'self'; img-src 'self' blob: data:; media-src 'self' blob:; "
+        "font-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'none'; "
+        "frame-ancestors 'none'; form-action 'self'"
+    )
+    if HSTS_ENABLED and request.is_secure:
+        response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
     return response
 
 
 @app.post("/api/jobs")
 @login_required
+@limiter.limit("10 per hour")
 def create_job():
     file = request.files.get("video")
     if file is None or not isinstance(file, FileStorage) or not file.filename:

@@ -1,5 +1,6 @@
 opencv-python>=4.8
 flask>=3.0
+flask-limiter>=3.12,<4
 pillow>=10.0
 faster-whisper>=1.2.1,<2
 cryptography>=45.0,<47

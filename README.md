@@ -2,7 +2,7 @@
 
 <img src="assets/reelscope-icon-256.png" alt="ReelScope icon" width="96" />
 
-ReelScope is a private, local-first video workspace for Windows. Drop in a video, extract exact frames with CPU or NVIDIA CUDA acceleration, scrub or play the source video, reopen past jobs, create timestamped SRT transcripts, and export a single PNG or sampled ZIP.
+ReelScope is a private, local-first video workspace for Windows or a self-hosted CPU server. Drop in a video, extract exact frames with CPU or NVIDIA CUDA acceleration, scrub or play the source video, reopen past jobs, create timestamped SRT transcripts, and export a single PNG or sampled ZIP.
 
 ![ReelScope desktop workspace](docs/reelscope-preview.png)
 
@@ -47,6 +47,53 @@ This creates a `ReelScope` shortcut on the Windows desktop and launches it throu
 ```
 
 The packaged app is written to `dist\ReelScope\ReelScope.exe`. Packaged builds store their library under `%LOCALAPPDATA%\ReelScope\data`.
+
+## Docker self-hosting (CPU)
+
+Docker Engine with Compose v2 is the only host prerequisite. The provided configuration builds the app, runs it as an unprivileged user with all Linux capabilities removed, keeps the container filesystem read-only, and persists the database, uploads, transcripts, models, session key, and credential-encryption key in one Docker volume.
+
+```bash
+cp .env.example .env
+docker compose build
+docker compose up -d
+```
+
+Create the first administrator without placing its password in a command argument. On PowerShell 7:
+
+```powershell
+Read-Host "Admin password" -MaskInput | docker compose run --rm reelscope python manage_users.py admin --data-dir /data --password-stdin
+```
+
+On Bash:
+
+```bash
+read -rsp "Admin password: " password; printf '%s\n' "$password" | docker compose run --rm reelscope python manage_users.py admin --data-dir /data --password-stdin; unset password
+```
+
+Open `http://127.0.0.1:8002`. Public registration is disabled by default; set `REELSCOPE_ALLOW_REGISTRATION=1` only if you are prepared to operate a multi-user service.
+
+The default port is bound to loopback, so it is not directly exposed to the LAN or internet. For remote access, keep that restriction and place ReelScope behind an HTTPS reverse proxy or outbound tunnel. Set these values in `.env` for the public hostname:
+
+```dotenv
+REELSCOPE_SECURE_COOKIES=1
+REELSCOPE_HSTS=1
+REELSCOPE_PROXY_HOPS=1
+REELSCOPE_TRUSTED_HOSTS=reelscope.example.com,localhost,127.0.0.1
+```
+
+Only set `REELSCOPE_PROXY_HOPS` when the app can be reached solely through that exact number of trusted proxies. Keep Gunicorn at one worker: extraction and transcription queues are process-local. Threads handle concurrent HTTP requests while the two bounded background executors serialize CPU-heavy work.
+
+Before an upgrade, stop the service and copy the complete `/data` directory so SQLite and the filesystem remain consistent:
+
+```bash
+docker compose stop
+docker compose cp reelscope:/data ./reelscope-data-backup
+docker compose start
+```
+
+Protect that backup like account data. Losing `.session_key` signs everyone out; losing `.credential_key` makes stored ElevenLabs keys unreadable. Test restoration on another machine before relying on the backup.
+
+This is deliberately a low-volume self-hosted design. It does not provide account recovery, storage quotas, automatic retention/deletion, a distributed job queue, or multi-node scaling. The default 95 MB upload cap fits common proxied-service limits; lower it if your reverse proxy or available storage requires that.
 
 ## Accounts
 
@@ -108,11 +155,11 @@ py -3 -m venv .venv
 
 The UI is plain HTML, CSS, and JavaScript served by Flask. No external CDN is required at runtime.
 
-For server ownership, persistence, security boundaries, capacity behavior, and known production gaps, see [DEVOPS_HANDOFF.md](DEVOPS_HANDOFF.md).
+For server ownership, persistence, security boundaries, capacity behavior, and remaining operational limits, see [DEVOPS_HANDOFF.md](DEVOPS_HANDOFF.md).
 
 ## Privacy, data, and network use
 
-ReelScope has no analytics or telemetry. Frame extraction and local Whisper transcription remain on the host. When a user selects ElevenLabs, ReelScope sends only that user's source video and chosen speech-to-text options to the ElevenLabs API. Browser mode binds to all local interfaces by default so registered users on the LAN can reach it. The built-in server is intended for a trusted local network; before exposing it to the public internet, place it behind an HTTPS reverse proxy and set `REELSCOPE_SECURE_COOKIES=1`.
+ReelScope has no analytics or telemetry. Frame extraction and local Whisper transcription remain on the host. The first use of a local model downloads its files from Hugging Face. When a user selects ElevenLabs, ReelScope sends only that user's source video and chosen speech-to-text options to the ElevenLabs API. The Windows development server binds to local interfaces and is intended only for a trusted network. Public deployments should use the provided Gunicorn container behind an HTTPS reverse proxy or outbound tunnel.
 
 ## License
 

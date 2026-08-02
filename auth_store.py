@@ -71,6 +71,15 @@ class AuthStore:
                 """
             )
 
+    def healthcheck(self) -> None:
+        try:
+            with closing(self._connect()) as connection:
+                row = connection.execute("SELECT 1").fetchone()
+        except sqlite3.Error as exc:
+            raise RuntimeError("database health check failed") from exc
+        if row is None or int(row[0]) != 1:
+            raise RuntimeError("database health check failed")
+
     @staticmethod
     def validate_username(username: str) -> str:
         normalized = username.strip()

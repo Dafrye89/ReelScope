@@ -1,4 +1,5 @@
 .venv/
+.env
 web_data/
 web_data_cuda/
 __pycache__/
@@ -24,3 +25,6 @@ models/
 design/
 design-qa.md
 docs/qa/
+.codex-remote-attachments/
+*.log
+*.err

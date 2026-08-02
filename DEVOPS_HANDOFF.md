@@ -4,7 +4,7 @@ Last verified: 2026-08-01
 
 Repository: <https://github.com/Dafrye89/ReelScope>
 
-Verified commit: `eff25eb` (`agent/auth-video-transcription`, draft PR #1 at the time of writing)
+Verified branch: `agent/auth-video-transcription` (PR #1)
 
 This document describes what ReelScope is, how it behaves, what it stores, and which production concerns are currently unresolved. It is intentionally not an infrastructure runbook.
 
@@ -17,14 +17,14 @@ Transcription can use either:
 - local Faster-Whisper models on CPU or NVIDIA CUDA; or
 - the account owner's ElevenLabs API key with Scribe v2 or v1.
 
-Users can access only jobs and artifacts assigned to their account. Registration is currently open to anyone who can reach `/register`.
+Users can access only jobs and artifacts assigned to their account. Registration remains enabled for the Windows development launchers and is disabled by default in the Docker deployment.
 
 ## Current runtime shape
 
 | Concern | Current implementation |
 |---|---|
 | Server framework | Flask 3 |
-| Tested runtime | Windows, Python 3.13 |
+| Tested runtime | Windows and a Linux CPU container, Python 3.13 |
 | Browser runtime | Plain HTML, CSS, and JavaScript; no Node.js runtime is required in production |
 | Persistence | Local filesystem plus SQLite in WAL mode |
 | Background work | Two in-process `ThreadPoolExecutor` pools |
@@ -34,8 +34,9 @@ Users can access only jobs and artifacts assigned to their account. Registration
 | CUDA extraction | FFmpeg/FFprobe with NVIDIA CUVID decoders |
 | Local speech-to-text | Faster-Whisper; CUDA float16 or CPU int8 |
 | Cloud speech-to-text | ElevenLabs synchronous batch API, called from a background worker |
-| Current web listener | `0.0.0.0:8002` for CPU or `0.0.0.0:8003` for CUDA |
-| Built-in web server | Flask development server, threaded, with debug disabled |
+| Development listener | `0.0.0.0:8002` for CPU or `0.0.0.0:8003` for CUDA |
+| Container listener | Gunicorn on `0.0.0.0:8000`; Compose publishes it only on host loopback |
+| Production process model | One Gunicorn worker with eight HTTP threads |
 | Desktop application | Separate PyInstaller/Edge WebView2 package; not the intended server artifact |
 
 The current launchers are Windows batch files. `run_web.bat` starts the CPU extractor. `run_web_cuda.bat` starts the CUDA extractor and is workstation-specific: it currently expects FFmpeg under `%USERPROFILE%\anaconda3\Library\bin`.
@@ -52,8 +53,9 @@ Runtime dependencies are declared in `requirements.txt`:
 - Faster-Whisper and its CTranslate2 runtime
 - cryptography
 - requests
+- Flask-Limiter
 
-CI runs on `windows-latest` with Python 3.13. Linux/container hosting has not been validated by this project. Node.js 22 is used by CI only to syntax-check the frontend JavaScript.
+The server-only requirements add Gunicorn. CI runs the Python tests on `windows-latest` and builds, constrains, starts, and health-checks the Linux image on `ubuntu-latest`. Node.js 22 is used only to syntax-check the frontend JavaScript.
 
 ## Configuration surface
 
@@ -74,6 +76,11 @@ All environment variables must be present before the application module is impor
 | `REELSCOPE_SESSION_SECRET` | Generated in the data directory | Flask session-signing secret |
 | `REELSCOPE_CREDENTIAL_KEY` | Generated in the data directory | Fernet key used to encrypt saved ElevenLabs API keys |
 | `REELSCOPE_SECURE_COOKIES` | `0` | Set to `1` when the public origin is HTTPS |
+| `REELSCOPE_ALLOW_REGISTRATION` | `1` | Set to `0` to remove and reject public registration |
+| `REELSCOPE_HSTS` | `0` | Set to `1` behind an HTTPS-only public origin |
+| `REELSCOPE_PROXY_HOPS` | `0` | Number of explicitly trusted reverse-proxy hops; allowed range is 0-2 |
+| `REELSCOPE_TRUSTED_HOSTS` | Empty | Comma-separated hostname allowlist |
+| `REELSCOPE_RATE_LIMIT_STORAGE` | `memory://` | Flask-Limiter storage; in-memory matches the supported one-process topology |
 
 Valid automatic local transcription model keys are:
 
@@ -134,7 +141,7 @@ ReelScope retains all of the following unless they are removed outside the appli
 - transcripts and optional document exports; and
 - downloaded local speech models.
 
-There is currently no job deletion endpoint, retention policy, per-user quota, disk quota, or automatic orphan cleanup. The default upload limit is unlimited. Selecting every frame or lossless PNG can expand a video into a very large number of files.
+There is currently no job deletion endpoint, retention policy, per-user quota, disk quota, or automatic orphan cleanup. The application default upload limit is unlimited, while the provided Docker configuration sets 95 MB. Selecting every frame or lossless PNG can expand a video into a very large number of files.
 
 ZIP downloads are assembled in memory before being returned. Large all-frame exports or concurrent ZIP requests can therefore consume substantial RAM in addition to the disk used by the source and frames.
 
@@ -196,19 +203,21 @@ Implemented controls:
 - CSRF checks on POST, PUT, PATCH, and DELETE requests;
 - per-user ownership checks for videos, frames, transcripts, and exports;
 - encrypted per-user ElevenLabs API keys that are never returned to the browser;
-- no-store responses, `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, a no-referrer policy, and a restrictive camera/microphone/location permissions policy.
+- login, registration, and upload rate limits;
+- an optional exact host allowlist and controlled reverse-proxy header handling;
+- an environment-controlled public-registration switch; and
+- no-store responses, HSTS when configured behind HTTPS, a nonce-based Content Security Policy, `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, a no-referrer policy, and a restrictive camera/microphone/location permissions policy.
 
 Current limitations that matter before public exposure:
 
-- Registration is open and has no approval or invitation mode.
-- There is no login/registration rate limiting, lockout, CAPTCHA, MFA, email verification, or password-reset flow.
+- There is no invitation or approval workflow when registration is enabled.
+- There is no account lockout, CAPTCHA, MFA, email verification, or password-reset flow.
 - Upload validation is primarily extension-based before the decoder examines the file.
 - There is no malware scanning, content moderation, or abuse workflow.
 - There is no audit log or security-event stream.
-- The application does not terminate TLS and does not set HSTS.
+- The application does not terminate TLS; HSTS depends on correct HTTPS proxy configuration.
 - Secure cookies are opt-in through `REELSCOPE_SECURE_COOKIES=1`.
-- There is no Content Security Policy header.
-- The built-in Flask server is explicitly described by the project as suitable for a trusted local network, not as the final public serving layer.
+- The Windows launchers still use Flask's development server and are not the public serving layer.
 
 The `is_admin` role currently adds access to an owned-job debug endpoint and an Admin badge. It is not a global superuser view of every user's videos.
 
@@ -220,26 +229,26 @@ Users self-register with a username and password. Usernames are 3-32 characters 
 
 Administrators are created or reset with `manage_users.py`, reading the password from standard input. The command must point at the same `VIDEO_FRAMES_DATA_DIR` as the running application. `--claim-existing` is optional and changes ownership only for unowned job directories.
 
-There is no browser-based user administration, password reset, account disable, account deletion, or registration toggle.
+There is no browser-based user administration, password reset, account disable, or account deletion. Registration can be disabled only through the deployment environment.
 
 ## Health, logging, and observability
 
 Current state:
 
-- There is no dedicated unauthenticated `/health` endpoint.
-- There is no readiness endpoint for data-directory write access, SQLite, FFmpeg/CUDA, model availability, disk space, or external providers.
+- `/healthz` checks that the data directory is readable/writable and SQLite answers a query.
+- The health endpoint does not test FFmpeg/CUDA, model availability, disk capacity, or external providers.
 - There are no application metrics, traces, structured logs, queue-depth metrics, or built-in alerts.
 - Flask access/error output goes to standard output and standard error.
 - Per-job extraction errors are stored in memory while active; transcription state/errors are written to each job's `transcription.json`.
 
-The login page can prove that the HTTP process responds, but it does not prove that uploads, persistence, extraction, GPU access, local transcription, or ElevenLabs are operational. Public ingress availability and end-to-end application health are separate signals.
+The health endpoint proves basic persistence, not uploads, extraction, GPU access, local transcription, or ElevenLabs. Public ingress availability and end-to-end application health are separate signals.
 
 ## Public delivery considerations
 
 These are requirements and constraints, not a prescribed platform:
 
 - The public origin needs HTTPS before secure cookies are enabled.
-- The application currently binds to all interfaces; the intended internal exposure boundary should be explicit.
+- The container listens on its private container network; the generic Compose file publishes only to host loopback.
 - Uploaded videos and generated frames are private user content and should not be directly exposed from the filesystem.
 - A public reverse proxy or ingress must account for large request bodies, long downloads, conditional/range responses, and no-cache headers.
 - The data directory, SQLite database, encryption keys, and media files require host-level access controls.
@@ -267,18 +276,15 @@ The deployment owner needs explicit answers for:
 
 The following are not implemented in the current repository:
 
-- a production web-server configuration;
 - durable background jobs or retry scheduling;
 - multi-instance coordination;
 - object storage;
-- health/readiness endpoints;
+- deep readiness checks;
 - structured operational telemetry;
-- rate limiting and public-registration controls;
 - user/account administration;
 - storage quotas, retention, and deletion;
 - versioned database migrations;
 - automated backup/restore validation;
-- Linux/container deployment validation; and
 - a production security review or load test.
 
 These gaps do not prevent a controlled low-volume deployment, but they define its operating and risk envelope.
@@ -294,7 +300,7 @@ node --check assets/reelscope.js
 python -m py_compile web_app.py web_app_cuda.py reelscope_desktop.pyw
 ```
 
-At the verified commit, 16 tests passed locally and both GitHub Actions runs passed. The tests cover authentication, CSRF, account isolation, history restoration, frame/video delivery, ZIP/PNG exports, automatic transcription queueing, editable word-timed SRT, encrypted account-scoped ElevenLabs keys, provider option validation, and protected transcript exports.
+Nineteen tests pass locally. They cover authentication, CSRF, account isolation, history restoration, frame/video delivery, ZIP/PNG exports, automatic transcription queueing, editable word-timed SRT, encrypted account-scoped ElevenLabs keys, provider option validation, protected transcript exports, registration shutdown, basic health, security headers, and host rejection. The container CI job builds the Linux image and checks `/healthz` under the same read-only/capability-free constraints used by the example deployment.
 
 A live ElevenLabs Scribe v2 test also completed against a 21.08-second video, returned 19 word-timed cues, and synchronized with the playback transcript highlighter. This verifies the integration path, not production capacity or provider availability.
 
@@ -313,5 +319,6 @@ A live ElevenLabs Scribe v2 test also completed against a 21.08-second video, re
 | User/admin utility | `manage_users.py` |
 | Web UI | `templates/` and `assets/` |
 | Windows launchers | `run_web.bat`, `run_web_cuda.bat` |
+| Container and self-host configuration | `Dockerfile`, `compose.yaml`, `.env.example` |
 | Automated tests | `tests/` |
 | CI and release workflows | `.github/workflows/` |
