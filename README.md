@@ -108,6 +108,8 @@ py -3 -m venv .venv
 
 The UI is plain HTML, CSS, and JavaScript served by Flask. No external CDN is required at runtime.
 
+For server ownership, persistence, security boundaries, capacity behavior, and known production gaps, see [DEVOPS_HANDOFF.md](DEVOPS_HANDOFF.md).
+
 ## Privacy, data, and network use
 
 ReelScope has no analytics or telemetry. Frame extraction and local Whisper transcription remain on the host. When a user selects ElevenLabs, ReelScope sends only that user's source video and chosen speech-to-text options to the ElevenLabs API. Browser mode binds to all local interfaces by default so registered users on the LAN can reach it. The built-in server is intended for a trusted local network; before exposing it to the public internet, place it behind an HTTPS reverse proxy and set `REELSCOPE_SECURE_COOKIES=1`.
