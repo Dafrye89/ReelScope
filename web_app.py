@@ -1,26 +1,41 @@
 from __future__ import annotations
 
 import io
+import hmac
 import json
 import math
 import os
 import re
+import secrets
 import sys
 import threading
 import zipfile
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
+from functools import wraps
 from pathlib import Path
 from typing import Literal
 from uuid import uuid4
 
-from flask import Flask, jsonify, render_template, request, send_file, send_from_directory
+from cryptography.fernet import Fernet, InvalidToken
+from flask import Flask, g, jsonify, redirect, render_template, request, send_file, send_from_directory, session, url_for
+from flask_limiter import Limiter
 from werkzeug.datastructures import FileStorage
 from werkzeug.exceptions import RequestEntityTooLarge
+from werkzeug.middleware.proxy_fix import ProxyFix
 from werkzeug.utils import secure_filename
 
+from auth_store import AuthStore, User
+from elevenlabs_transcriber import available_models as available_elevenlabs_models
+from elevenlabs_transcriber import default_settings as default_elevenlabs_settings
+from elevenlabs_transcriber import transcribe_to_srt as transcribe_with_elevenlabs
+from elevenlabs_transcriber import validate_api_key as validate_elevenlabs_api_key
+from elevenlabs_transcriber import validate_settings as validate_elevenlabs_settings
 from frame_extractor import ExtractResult, extract_frames
+from transcriber import MODELS as TRANSCRIPTION_MODELS
+from transcriber import available_models, transcribe_to_srt
+from transcript_store import read_srt, update_cue_text, write_srt
 
 
 JobState = Literal["queued", "running", "done", "error"]
@@ -43,6 +58,35 @@ APP_DIR = Path(__file__).resolve().parent
 RESOURCE_DIR = Path(getattr(sys, "_MEIPASS", APP_DIR))
 DATA_DIR = Path(os.environ.get("VIDEO_FRAMES_DATA_DIR", str(APP_DIR / "web_data"))).resolve()
 JOBS_DIR = DATA_DIR / "jobs"
+MODEL_CACHE_DIR = DATA_DIR / "models"
+
+
+def _env_flag(name: str, default: bool = False) -> bool:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _load_or_create_credential_cipher() -> Fernet:
+    configured = os.environ.get("REELSCOPE_CREDENTIAL_KEY", "").strip()
+    if configured:
+        return Fernet(configured.encode("ascii"))
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    key_path = DATA_DIR / ".credential_key"
+    if key_path.is_file():
+        return Fernet(key_path.read_bytes().strip())
+    generated = Fernet.generate_key()
+    key_path.write_bytes(generated)
+    try:
+        key_path.chmod(0o600)
+    except OSError:
+        pass
+    return Fernet(generated)
+
+
+auth_store = AuthStore(DATA_DIR / "reelscope.sqlite3")
+credential_cipher = _load_or_create_credential_cipher()
 
 
 def _read_max_upload_mb() -> int | None:
@@ -60,6 +104,15 @@ ALLOWED_VIDEO_EXTS = {".mp4", ".mov", ".avi", ".mkv", ".m4v", ".wmv", ".webm", "
 JOB_ID_RE = re.compile(r"^[0-9a-f]{32}$")
 
 executor = ThreadPoolExecutor(max_workers=int(os.environ.get("VIDEO_FRAMES_WORKERS", "1")))
+transcription_executor = ThreadPoolExecutor(max_workers=int(os.environ.get("REELSCOPE_TRANSCRIPTION_WORKERS", "1")))
+AUTO_TRANSCRIPTION_MODEL = os.environ.get("REELSCOPE_AUTO_TRANSCRIBE_MODEL", "whisper-turbo")
+ALLOW_REGISTRATION = _env_flag("REELSCOPE_ALLOW_REGISTRATION", True)
+HSTS_ENABLED = _env_flag("REELSCOPE_HSTS")
+TRUSTED_HOSTS = {
+    host.strip().lower()
+    for host in os.environ.get("REELSCOPE_TRUSTED_HOSTS", "").split(",")
+    if host.strip()
+}
 jobs: dict[str, Job] = {}
 jobs_lock = threading.Lock()
 
@@ -70,15 +123,112 @@ app = Flask(
     static_folder=str(RESOURCE_DIR / "assets"),
     static_url_path="/assets",
 )
+
+proxy_hops = int(os.environ.get("REELSCOPE_PROXY_HOPS", "0"))
+if proxy_hops < 0 or proxy_hops > 2:
+    raise ValueError("REELSCOPE_PROXY_HOPS must be between 0 and 2")
+if proxy_hops:
+    app.wsgi_app = ProxyFix(
+        app.wsgi_app,
+        x_for=proxy_hops,
+        x_proto=proxy_hops,
+        x_host=proxy_hops,
+    )
+
+
+def _rate_limit_key() -> str:
+    return request.remote_addr or "unknown"
+
+
+limiter = Limiter(
+    key_func=_rate_limit_key,
+    app=app,
+    storage_uri=os.environ.get("REELSCOPE_RATE_LIMIT_STORAGE", "memory://"),
+)
+
+
+def _load_or_create_session_key() -> str:
+    configured = os.environ.get("REELSCOPE_SESSION_SECRET", "").strip()
+    if configured:
+        return configured
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    key_path = DATA_DIR / ".session_key"
+    if key_path.is_file():
+        existing = key_path.read_text(encoding="utf-8").strip()
+        if len(existing) >= 32:
+            return existing
+    generated = secrets.token_urlsafe(48)
+    key_path.write_text(generated, encoding="utf-8")
+    return generated
+
+
+app.secret_key = _load_or_create_session_key()
 if MAX_UPLOAD_MB is not None:
     app.config["MAX_CONTENT_LENGTH"] = MAX_UPLOAD_MB * 1024 * 1024
 app.config["TEMPLATES_AUTO_RELOAD"] = True
 app.config["SEND_FILE_MAX_AGE_DEFAULT"] = 0
+app.config["SESSION_COOKIE_HTTPONLY"] = True
+app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
+app.config["SESSION_COOKIE_SECURE"] = os.environ.get("REELSCOPE_SECURE_COOKIES", "0") == "1"
+app.config["PERMANENT_SESSION_LIFETIME"] = 60 * 60 * 24 * 14
 app.jinja_env.auto_reload = True
 
 
 def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def _csrf_token() -> str:
+    token = session.get("csrf_token")
+    if not isinstance(token, str) or len(token) < 32:
+        token = secrets.token_urlsafe(32)
+        session["csrf_token"] = token
+    return token
+
+
+app.jinja_env.globals["csrf_token"] = _csrf_token
+
+
+@app.context_processor
+def public_template_settings():
+    return {
+        "csp_nonce": getattr(g, "csp_nonce", ""),
+        "registration_allowed": ALLOW_REGISTRATION,
+    }
+
+
+@app.before_request
+def load_user_and_validate_request():
+    request_host = request.host.partition(":")[0].strip("[]").lower()
+    if TRUSTED_HOSTS and request_host not in TRUSTED_HOSTS:
+        return "unrecognized host", 400
+
+    g.csp_nonce = secrets.token_urlsafe(24)
+    user_id = session.get("user_id")
+    g.user = auth_store.get_user(int(user_id)) if isinstance(user_id, int) else None
+    if g.user is None and user_id is not None:
+        session.clear()
+
+    if request.method in {"POST", "PUT", "PATCH", "DELETE"}:
+        supplied = request.headers.get("X-CSRF-Token") or request.form.get("csrf_token", "")
+        expected = session.get("csrf_token", "")
+        if not isinstance(supplied, str) or not isinstance(expected, str) or not hmac.compare_digest(supplied, expected):
+            if request.path.startswith("/api/"):
+                return jsonify({"error": "invalid request token; refresh the page and try again"}), 400
+            return "invalid request token; refresh the page and try again", 400
+    return None
+
+
+def login_required(view):
+    @wraps(view)
+    def wrapped(*args, **kwargs):
+        if g.user is None:
+            if request.path.startswith("/api/") or request.path.startswith("/jobs/"):
+                return jsonify({"error": "authentication required"}), 401
+            return redirect(url_for("login", next=request.full_path if request.query_string else request.path))
+        return view(*args, **kwargs)
+
+    return wrapped
 
 
 def _job_dir(job_id: str) -> Path:
@@ -91,6 +241,142 @@ def _frames_dir(job_id: str) -> Path:
 
 def _meta_path(job_id: str) -> Path:
     return _job_dir(job_id) / "meta.json"
+
+
+def _video_path(job_id: str) -> Path | None:
+    job_dir = _job_dir(job_id)
+    if not job_dir.is_dir():
+        return None
+    for path in job_dir.iterdir():
+        if path.is_file() and path.stem == "upload" and path.suffix.lower() in ALLOWED_VIDEO_EXTS:
+            return path
+    return None
+
+
+def _transcription_status_path(job_id: str) -> Path:
+    return _job_dir(job_id) / "transcription.json"
+
+
+def _transcript_path(job_id: str) -> Path:
+    return _job_dir(job_id) / "transcript.srt"
+
+
+def _default_account_transcription_settings() -> dict:
+    return {
+        "provider": "local",
+        "local": {"model": "whisper-turbo", "language": "auto"},
+        "elevenlabs": default_elevenlabs_settings(),
+    }
+
+
+def _account_transcription_settings(user_id: int, *, include_key: bool = False) -> dict:
+    defaults = _default_account_transcription_settings()
+    stored = auth_store.get_transcription_settings(user_id)
+    if stored is None:
+        result = {**defaults, "api_key_configured": False, "api_key_suffix": ""}
+        if include_key:
+            result["api_key"] = None
+        return result
+    try:
+        decoded = json.loads(stored["settings_json"])
+    except (TypeError, json.JSONDecodeError):
+        decoded = {}
+    if not isinstance(decoded, dict):
+        decoded = {}
+    provider = str(stored.get("provider") or decoded.get("provider") or "local")
+    if provider not in {"local", "elevenlabs"}:
+        provider = "local"
+    local = decoded.get("local") if isinstance(decoded.get("local"), dict) else {}
+    local_model = str(local.get("model") or "whisper-turbo")
+    if local_model not in TRANSCRIPTION_MODELS:
+        local_model = "whisper-turbo"
+    local_language = str(local.get("language") or "auto").strip().lower() or "auto"
+    try:
+        elevenlabs = validate_elevenlabs_settings(decoded.get("elevenlabs"))
+    except ValueError:
+        elevenlabs = default_elevenlabs_settings()
+
+    api_key = None
+    encrypted = stored.get("elevenlabs_api_key_encrypted")
+    if encrypted:
+        try:
+            api_key = credential_cipher.decrypt(bytes(encrypted)).decode("utf-8")
+        except (InvalidToken, UnicodeDecodeError, ValueError):
+            api_key = None
+    result = {
+        "provider": provider,
+        "local": {"model": local_model, "language": local_language},
+        "elevenlabs": elevenlabs,
+        "api_key_configured": bool(api_key),
+        "api_key_suffix": api_key[-4:] if api_key else "",
+        "updated_utc": stored.get("updated_utc"),
+    }
+    if include_key:
+        result["api_key"] = api_key
+    return result
+
+
+def _save_account_transcription_settings(
+    user_id: int,
+    payload: dict,
+    *,
+    new_api_key: str | None = None,
+) -> dict:
+    current = _account_transcription_settings(user_id, include_key=True)
+    provider = str(payload.get("provider") or current["provider"])
+    if provider not in {"local", "elevenlabs"}:
+        raise ValueError("unknown transcription provider")
+
+    raw_local = payload.get("local") if isinstance(payload.get("local"), dict) else current["local"]
+    local_model = str(raw_local.get("model") or "whisper-turbo")
+    if local_model not in TRANSCRIPTION_MODELS:
+        raise ValueError("unknown local transcription model")
+    local_language = str(raw_local.get("language") or "auto").strip().lower() or "auto"
+    elevenlabs = validate_elevenlabs_settings(payload.get("elevenlabs", current["elevenlabs"]))
+
+    api_key = new_api_key.strip() if isinstance(new_api_key, str) and new_api_key.strip() else current.get("api_key")
+    if provider == "elevenlabs" and not api_key:
+        raise ValueError("save an ElevenLabs API key before selecting the cloud provider")
+    encrypted = credential_cipher.encrypt(api_key.encode("utf-8")) if api_key else None
+    saved_settings = {
+        "provider": provider,
+        "local": {"model": local_model, "language": local_language},
+        "elevenlabs": elevenlabs,
+    }
+    auth_store.save_transcription_settings(
+        user_id,
+        provider,
+        json.dumps(saved_settings, separators=(",", ":"), sort_keys=True),
+        encrypted,
+        _utc_now_iso(),
+    )
+    return _account_transcription_settings(user_id)
+
+
+def _read_transcription_status(job_id: str) -> dict:
+    path = _transcription_status_path(job_id)
+    if not path.is_file():
+        return {"state": "idle"}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {"state": "error", "error": "transcription status is unreadable"}
+    return payload if isinstance(payload, dict) else {"state": "error", "error": "invalid transcription status"}
+
+
+def _write_transcription_status(job_id: str, payload: dict) -> None:
+    path = _transcription_status_path(job_id)
+    temporary = path.with_suffix(".json.tmp")
+    temporary.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+    temporary.replace(path)
+
+
+def _owned_job(job_id: str) -> Job | None:
+    if g.user is None or not _validate_job_id(job_id):
+        return None
+    if not auth_store.user_owns_job(g.user.id, job_id):
+        return None
+    return _get_job(job_id)
 
 
 def _set_job(job: Job) -> None:
@@ -235,6 +521,21 @@ def _job_payload(job: Job, *, include_frames: bool) -> dict:
         payload["thumbnail"] = _representative_frame(job.id)
     if include_frames:
         payload["frames"] = frames
+    video_path = _video_path(job.id)
+    payload["video_available"] = video_path is not None
+    payload["video_url"] = f"/jobs/{job.id}/video" if video_path is not None else None
+    transcription = _read_transcription_status(job.id)
+    transcription["download_url"] = f"/api/jobs/{job.id}/transcript.srt" if transcription.get("state") == "done" else None
+    if transcription.get("state") == "done" and isinstance(transcription.get("additional_formats"), list):
+        transcription["additional_formats"] = [
+            {
+                **item,
+                "download_url": f"/api/jobs/{job.id}/transcript-export/{item['filename']}",
+            }
+            for item in transcription["additional_formats"]
+            if isinstance(item, dict) and isinstance(item.get("filename"), str)
+        ]
+    payload["transcription"] = transcription
     return payload
 
 
@@ -368,13 +669,250 @@ def _extract_job(job_id: str, video_path: Path, original_filename: str, image_ex
         _update_job(job_id, state="error", error=str(e))
 
 
+def _transcribe_job(job_id: str, user_id: int, settings: dict) -> None:
+    provider = settings["provider"]
+    local_settings = settings["local"]
+    elevenlabs_settings = settings["elevenlabs"]
+    model_key = local_settings["model"] if provider == "local" else elevenlabs_settings["model_id"]
+    model_label = (
+        TRANSCRIPTION_MODELS[model_key].label
+        if provider == "local"
+        else f"ElevenLabs {'Scribe v2' if model_key == 'scribe_v2' else 'Scribe v1'}"
+    )
+    language = local_settings["language"] if provider == "local" else elevenlabs_settings["language_code"]
+    queued_status = _read_transcription_status(job_id)
+    base_status = {
+        "state": "running",
+        "provider": provider,
+        "model": model_key,
+        "model_label": model_label,
+        "language_requested": language or "auto",
+        "automatic": bool(queued_status.get("automatic")),
+        "started_utc": _utc_now_iso(),
+        "progress_seconds": 0.0,
+    }
+    _write_transcription_status(job_id, base_status)
+
+    def on_progress(seconds: float) -> None:
+        _write_transcription_status(job_id, {**base_status, "progress_seconds": round(seconds, 3)})
+
+    try:
+        video_path = _video_path(job_id)
+        if video_path is None:
+            raise RuntimeError("the original video is unavailable")
+        if provider == "elevenlabs":
+            account = _account_transcription_settings(user_id, include_key=True)
+            api_key = account.get("api_key")
+            if not api_key:
+                raise RuntimeError("the saved ElevenLabs API key is unavailable")
+            result = transcribe_with_elevenlabs(
+                video_path,
+                _transcript_path(job_id),
+                api_key=api_key,
+                settings=elevenlabs_settings,
+            )
+        else:
+            selected_language = None if language in {"", "auto"} else language
+            result = transcribe_to_srt(
+                video_path,
+                _transcript_path(job_id),
+                model_key=model_key,
+                language=selected_language,
+                cache_dir=MODEL_CACHE_DIR,
+                on_progress=on_progress,
+            )
+        _write_transcription_status(
+            job_id,
+            {
+                **base_status,
+                **result,
+                "state": "done",
+                "completed_utc": _utc_now_iso(),
+                "progress_seconds": result.get("duration_seconds", 0.0),
+            },
+        )
+    except Exception as exc:  # noqa: BLE001
+        _write_transcription_status(
+            job_id,
+            {
+                **base_status,
+                "state": "error",
+                "completed_utc": _utc_now_iso(),
+                "error": str(exc),
+            },
+        )
+
+
+def _queue_transcription(job_id: str, user_id: int, settings: dict, *, automatic: bool) -> dict:
+    provider = settings["provider"]
+    if provider == "local":
+        model_key = settings["local"]["model"]
+        if model_key not in TRANSCRIPTION_MODELS:
+            raise ValueError("unknown transcription model")
+        model_label = TRANSCRIPTION_MODELS[model_key].label
+        language = settings["local"]["language"]
+    elif provider == "elevenlabs":
+        model_key = settings["elevenlabs"]["model_id"]
+        model_label = f"ElevenLabs {'Scribe v2' if model_key == 'scribe_v2' else 'Scribe v1'}"
+        language = settings["elevenlabs"]["language_code"]
+        if not _account_transcription_settings(user_id, include_key=True).get("api_key"):
+            raise ValueError("save an ElevenLabs API key before using cloud transcription")
+    else:
+        raise ValueError("unknown transcription provider")
+    queued = {
+        "state": "queued",
+        "provider": provider,
+        "model": model_key,
+        "model_label": model_label,
+        "language_requested": language or "auto",
+        "automatic": automatic,
+        "queued_utc": _utc_now_iso(),
+        "progress_seconds": 0.0,
+    }
+    _write_transcription_status(job_id, queued)
+    transcription_executor.submit(_transcribe_job, job_id, user_id, settings)
+    return queued
+
+
+def _auto_transcribe_after_extraction(job_id: str) -> None:
+    job = _get_job(job_id)
+    if job is None or job.state != "done" or _video_path(job_id) is None:
+        return
+    if _read_transcription_status(job_id).get("state") != "idle":
+        return
+    user_id = auth_store.job_owner_id(job_id)
+    if user_id is None:
+        return
+    settings = _account_transcription_settings(user_id, include_key=True)
+    if auth_store.get_transcription_settings(user_id) is None:
+        model_key = AUTO_TRANSCRIPTION_MODEL if AUTO_TRANSCRIPTION_MODEL in TRANSCRIPTION_MODELS else "whisper-turbo"
+        settings["local"]["model"] = model_key
+    try:
+        _queue_transcription(job_id, user_id, settings, automatic=True)
+    except ValueError as exc:
+        _write_transcription_status(
+            job_id,
+            {
+                "state": "error",
+                "provider": settings.get("provider", "local"),
+                "automatic": True,
+                "completed_utc": _utc_now_iso(),
+                "error": str(exc),
+            },
+        )
+
+
+@app.route("/login", methods=["GET", "POST"])
+@limiter.limit("10 per minute", methods=["POST"])
+def login():
+    if g.user is not None:
+        return redirect(url_for("index"))
+    error = None
+    username = ""
+    if request.method == "POST":
+        username = request.form.get("username", "").strip()
+        password = request.form.get("password", "")
+        user = auth_store.authenticate(username, password)
+        if user is None:
+            error = "The username or password is incorrect."
+        else:
+            requested_next = request.form.get("next", "")
+            destination = requested_next if requested_next.startswith("/") and not requested_next.startswith("//") else url_for("index")
+            session.clear()
+            session["user_id"] = user.id
+            session.permanent = True
+            _csrf_token()
+            return redirect(destination)
+    return render_template("login.html", error=error, username=username, next=request.args.get("next", ""))
+
+
+@app.route("/register", methods=["GET", "POST"])
+@limiter.limit("3 per hour", methods=["POST"])
+def register():
+    if not ALLOW_REGISTRATION:
+        return "registration is disabled", 404
+    if g.user is not None:
+        return redirect(url_for("index"))
+    error = None
+    username = ""
+    if request.method == "POST":
+        username = request.form.get("username", "").strip()
+        password = request.form.get("password", "")
+        try:
+            user = auth_store.create_user(username, password, _utc_now_iso())
+        except ValueError as exc:
+            error = str(exc)
+        else:
+            session.clear()
+            session["user_id"] = user.id
+            session.permanent = True
+            _csrf_token()
+            return redirect(url_for("index"))
+    return render_template("register.html", error=error, username=username)
+
+
+@app.post("/logout")
+@login_required
+def logout():
+    session.clear()
+    return redirect(url_for("login"))
+
+
 @app.get("/")
+@login_required
 def index():
     return render_template(
         "index.html",
         max_upload_label=MAX_UPLOAD_LABEL,
         engine_label=os.environ.get("VIDEO_FRAMES_ENGINE", "CPU").upper(),
+        user=g.user,
+        transcription_models=available_models(),
+        elevenlabs_models=available_elevenlabs_models(),
     )
+
+
+@app.get("/healthz")
+def healthz():
+    try:
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
+        if not os.access(DATA_DIR, os.R_OK | os.W_OK):
+            raise OSError("data directory is not readable and writable")
+        auth_store.healthcheck()
+    except (OSError, RuntimeError):
+        return jsonify({"status": "unhealthy"}), 503
+    return jsonify({"status": "ok"})
+
+
+@app.route("/api/account/transcription-settings", methods=["GET", "PUT", "DELETE"])
+@login_required
+def account_transcription_settings():
+    if request.method == "GET":
+        return jsonify(_account_transcription_settings(g.user.id))
+    if request.method == "DELETE":
+        auth_store.delete_elevenlabs_api_key(g.user.id, _utc_now_iso())
+        return jsonify(_account_transcription_settings(g.user.id))
+
+    payload = request.get_json(silent=True) or {}
+    if not isinstance(payload, dict):
+        return jsonify({"error": "invalid transcription settings"}), 400
+    new_api_key = str(payload.get("api_key") or "").strip()
+    key_details = None
+    try:
+        if new_api_key:
+            key_details = validate_elevenlabs_api_key(new_api_key)
+        saved = _save_account_transcription_settings(
+            g.user.id,
+            payload,
+            new_api_key=new_api_key or None,
+        )
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except RuntimeError as exc:
+        return jsonify({"error": str(exc)}), 502
+    if key_details:
+        saved["elevenlabs_tier"] = key_details.get("tier")
+        saved["key_validated"] = True
+    return jsonify(saved)
 
 
 @app.errorhandler(RequestEntityTooLarge)
@@ -390,10 +928,26 @@ def add_no_cache_headers(response):
     response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
     response.headers["Pragma"] = "no-cache"
     response.headers["Expires"] = "0"
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
+    nonce = getattr(g, "csp_nonce", "")
+    response.headers["Content-Security-Policy"] = (
+        "default-src 'self'; "
+        f"script-src 'self' 'nonce-{nonce}'; "
+        "style-src 'self'; img-src 'self' blob: data:; media-src 'self' blob:; "
+        "font-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'none'; "
+        "frame-ancestors 'none'; form-action 'self'"
+    )
+    if HSTS_ENABLED and request.is_secure:
+        response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
     return response
 
 
 @app.post("/api/jobs")
+@login_required
+@limiter.limit("10 per hour")
 def create_job():
     file = request.files.get("video")
     if file is None or not isinstance(file, FileStorage) or not file.filename:
@@ -410,6 +964,7 @@ def create_job():
     job_id = uuid4().hex
     created = _utc_now_iso()
     _set_job(Job(id=job_id, state="queued", created_utc=created, filename="", image_ext=image_ext, sample_fps=sample_fps))
+    auth_store.assign_job(g.user.id, job_id, created)
 
     try:
         video_path, original_name = _save_upload(file, job_id)
@@ -418,33 +973,36 @@ def create_job():
         _update_job(job_id, state="error", error=str(e))
         return jsonify({"error": str(e)}), 400
 
-    executor.submit(_extract_job, job_id, video_path, original_name, image_ext, sample_fps)
+    extraction_future = executor.submit(_extract_job, job_id, video_path, original_name, image_ext, sample_fps)
+    extraction_future.add_done_callback(lambda _future: _auto_transcribe_after_extraction(job_id))
     return jsonify({"job_id": job_id})
 
 
 @app.get("/api/jobs")
+@login_required
 def list_jobs():
     JOBS_DIR.mkdir(parents=True, exist_ok=True)
+    allowed_ids = auth_store.job_ids_for_user(g.user.id)
     restored: list[Job] = []
-    for path in JOBS_DIR.iterdir():
-        if not path.is_dir() or not _validate_job_id(path.name):
+    for job_id in allowed_ids:
+        path = JOBS_DIR / job_id
+        if not path.is_dir() or not _validate_job_id(job_id):
             continue
-        job = _get_job(path.name)
+        job = _get_job(job_id)
         if job is not None:
             restored.append(job)
 
     with jobs_lock:
-        active = list(jobs.values())
+        active = [job for job in jobs.values() if job.id in allowed_ids]
     by_id = {job.id: job for job in [*restored, *active]}
     ordered = sorted(by_id.values(), key=lambda item: item.created_utc, reverse=True)
     return jsonify({"jobs": [_job_payload(job, include_frames=False) for job in ordered]})
 
 
 @app.get("/api/jobs/<job_id>")
+@login_required
 def get_job(job_id: str):
-    if not _validate_job_id(job_id):
-        return jsonify({"error": "invalid job id"}), 404
-    job = _get_job(job_id)
+    job = _owned_job(job_id)
     if job is None:
         return jsonify({"error": "job not found"}), 404
 
@@ -452,11 +1010,10 @@ def get_job(job_id: str):
 
 
 @app.get("/api/jobs/<job_id>/debug")
+@login_required
 def get_job_debug(job_id: str):
-    if not _validate_job_id(job_id):
-        return jsonify({"error": "invalid job id"}), 404
-    job = _get_job(job_id)
-    if job is None:
+    job = _owned_job(job_id)
+    if job is None or not g.user.is_admin:
         return jsonify({"error": "job not found"}), 404
     frames = _list_frames(job_id)
     sample = {"first": frames[0] if frames else None, "last": frames[-1] if frames else None}
@@ -473,22 +1030,32 @@ def get_job_debug(job_id: str):
 
 
 @app.get("/jobs/<job_id>/frames/<path:filename>")
+@login_required
 def serve_frame(job_id: str, filename: str):
-    if not _validate_job_id(job_id):
-        return "not found", 404
-    job = _get_job(job_id)
+    job = _owned_job(job_id)
     if job is None:
         return "not found", 404
     frames_dir = _frames_dir(job_id)
     return send_from_directory(frames_dir, filename, conditional=True)
 
 
+@app.get("/jobs/<job_id>/video")
+@login_required
+def serve_original_video(job_id: str):
+    job = _owned_job(job_id)
+    video_path = _video_path(job_id) if job is not None else None
+    if job is None or video_path is None:
+        return "not found", 404
+    return send_file(video_path, conditional=True, as_attachment=False, download_name=job.filename)
+
+
 @app.get("/api/jobs/<job_id>/frame/<int:index>/download.png")
+@login_required
 def download_frame_png(job_id: str, index: int):
-    if not _validate_job_id(job_id):
-        return jsonify({"error": "invalid job id"}), 404
-    job = _get_job(job_id)
-    if job is None or job.state != "done":
+    job = _owned_job(job_id)
+    if job is None:
+        return jsonify({"error": "job not found"}), 404
+    if job.state != "done":
         return jsonify({"error": "job not ready"}), 400
 
     frames = _list_frames(job_id)
@@ -513,11 +1080,12 @@ def download_frame_png(job_id: str, index: int):
 
 
 @app.get("/api/jobs/<job_id>/download.zip")
+@login_required
 def download_all_zip(job_id: str):
-    if not _validate_job_id(job_id):
-        return jsonify({"error": "invalid job id"}), 404
-    job = _get_job(job_id)
-    if job is None or job.state != "done":
+    job = _owned_job(job_id)
+    if job is None:
+        return jsonify({"error": "job not found"}), 404
+    if job.state != "done":
         return jsonify({"error": "job not ready"}), 400
 
     fmt = request.args.get("format", "jpg").lower()
@@ -572,6 +1140,153 @@ def download_all_zip(job_id: str):
 
     zip_buf.seek(0)
     return send_file(zip_buf, mimetype="application/zip", as_attachment=True, download_name=zip_name)
+
+
+@app.post("/api/jobs/<job_id>/download-selected.zip")
+@login_required
+def download_selected_zip(job_id: str):
+    job = _owned_job(job_id)
+    if job is None:
+        return jsonify({"error": "job not found"}), 404
+    if job.state != "done":
+        return jsonify({"error": "job not ready"}), 400
+
+    payload = request.get_json(silent=True) or {}
+    requested = payload.get("indices")
+    if not isinstance(requested, list) or not requested:
+        return jsonify({"error": "select at least one frame"}), 400
+    if len(requested) > 1000:
+        return jsonify({"error": "select no more than 1,000 frames at a time"}), 400
+
+    frames = _list_frames(job_id)
+    selected_indices: list[int] = []
+    for value in requested:
+        if isinstance(value, bool) or not isinstance(value, int):
+            return jsonify({"error": "frame indices must be integers"}), 400
+        if value < 0 or value >= len(frames):
+            return jsonify({"error": "frame index out of range"}), 400
+        if value not in selected_indices:
+            selected_indices.append(value)
+    selected_indices.sort()
+
+    zip_buf = io.BytesIO()
+    base = Path(job.filename).stem if job.filename else job_id
+    with zipfile.ZipFile(zip_buf, "w", compression=zipfile.ZIP_DEFLATED) as bundle:
+        for index in selected_indices:
+            filename = frames[index]
+            bundle.write(_frames_dir(job_id) / filename, arcname=f"{base}/frames/{filename}")
+
+    zip_buf.seek(0)
+    zip_name = f"{base}_{len(selected_indices)}_selected_frames.zip"
+    return send_file(zip_buf, mimetype="application/zip", as_attachment=True, download_name=zip_name)
+
+
+@app.get("/api/transcription/models")
+@login_required
+def transcription_models():
+    return jsonify({"models": available_models()})
+
+
+@app.get("/api/jobs/<job_id>/transcription")
+@login_required
+def get_transcription(job_id: str):
+    if _owned_job(job_id) is None:
+        return jsonify({"error": "job not found"}), 404
+    payload = _read_transcription_status(job_id)
+    payload["download_url"] = f"/api/jobs/{job_id}/transcript.srt" if payload.get("state") == "done" else None
+    if payload.get("state") == "done" and isinstance(payload.get("additional_formats"), list):
+        payload["additional_formats"] = [
+            {
+                **item,
+                "download_url": f"/api/jobs/{job_id}/transcript-export/{item['filename']}",
+            }
+            for item in payload["additional_formats"]
+            if isinstance(item, dict) and isinstance(item.get("filename"), str)
+        ]
+    return jsonify(payload)
+
+
+@app.post("/api/jobs/<job_id>/transcribe")
+@login_required
+def start_transcription(job_id: str):
+    job = _owned_job(job_id)
+    if job is None:
+        return jsonify({"error": "job not found"}), 404
+    if _video_path(job_id) is None:
+        return jsonify({"error": "the original video is unavailable"}), 400
+    current = _read_transcription_status(job_id)
+    if current.get("state") in {"queued", "running"}:
+        return jsonify({"error": "transcription is already running"}), 409
+    payload = request.get_json(silent=True) or {}
+    settings = _account_transcription_settings(g.user.id, include_key=True)
+    # Preserve the original local-model request shape for older clients.
+    if isinstance(payload, dict) and payload.get("model"):
+        settings["provider"] = "local"
+        settings["local"] = {
+            "model": str(payload.get("model") or "whisper-turbo"),
+            "language": str(payload.get("language") or "auto").strip().lower() or "auto",
+        }
+    try:
+        queued = _queue_transcription(job_id, g.user.id, settings, automatic=False)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    return jsonify(queued), 202
+
+
+@app.get("/api/jobs/<job_id>/transcript-export/<filename>")
+@login_required
+def download_transcript_export(job_id: str, filename: str):
+    job = _owned_job(job_id)
+    status = _read_transcription_status(job_id)
+    allowed = {
+        str(item.get("filename"))
+        for item in status.get("additional_formats") or []
+        if isinstance(item, dict) and isinstance(item.get("filename"), str)
+    }
+    if job is None or status.get("state") != "done" or filename not in allowed:
+        return jsonify({"error": "transcript export not found"}), 404
+    export_path = _job_dir(job_id) / filename
+    if not export_path.is_file() or export_path.parent != _job_dir(job_id):
+        return jsonify({"error": "transcript export not found"}), 404
+    download_name = f"{Path(job.filename).stem or 'transcript'}-{filename}"
+    return send_file(export_path, as_attachment=True, download_name=download_name)
+
+
+@app.route("/api/jobs/<job_id>/transcript", methods=["GET", "PUT"])
+@login_required
+def transcript_data(job_id: str):
+    job = _owned_job(job_id)
+    transcript_path = _transcript_path(job_id)
+    if job is None or not transcript_path.is_file() or _read_transcription_status(job_id).get("state") != "done":
+        return jsonify({"error": "transcript is not ready"}), 404
+
+    cues = read_srt(transcript_path)
+    if not cues:
+        return jsonify({"error": "transcript has no readable cues"}), 422
+    if request.method == "GET":
+        return jsonify({"cues": cues, "filename": f"{Path(job.filename).stem or 'transcript'}.srt"})
+
+    payload = request.get_json(silent=True) or {}
+    try:
+        cues = update_cue_text(cues, payload.get("cues"))
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    write_srt(transcript_path, cues)
+    status = _read_transcription_status(job_id)
+    status["edited_utc"] = _utc_now_iso()
+    _write_transcription_status(job_id, status)
+    return jsonify({"cues": cues, "saved": True, "edited_utc": status["edited_utc"]})
+
+
+@app.get("/api/jobs/<job_id>/transcript.srt")
+@login_required
+def download_transcript(job_id: str):
+    job = _owned_job(job_id)
+    transcript_path = _transcript_path(job_id)
+    if job is None or not transcript_path.is_file() or _read_transcription_status(job_id).get("state") != "done":
+        return jsonify({"error": "transcript is not ready"}), 404
+    download_name = f"{Path(job.filename).stem or 'transcript'}.srt"
+    return send_file(transcript_path, mimetype="application/x-subrip", as_attachment=True, download_name=download_name)
 
 
 def main() -> None:

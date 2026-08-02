@@ -1,0 +1,47 @@
+services:
+  reelscope:
+    build:
+      context: .
+    image: reelscope:local
+    restart: unless-stopped
+    init: true
+    read_only: true
+    user: "10001:10001"
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 256
+    cpus: 8
+    mem_limit: 16g
+    environment:
+      VIDEO_FRAMES_DATA_DIR: /data
+      VIDEO_FRAMES_ENGINE: CPU
+      VIDEO_FRAMES_MAX_UPLOAD_MB: "${VIDEO_FRAMES_MAX_UPLOAD_MB:-95}"
+      VIDEO_FRAMES_WORKERS: "${VIDEO_FRAMES_WORKERS:-1}"
+      REELSCOPE_TRANSCRIPTION_WORKERS: "${REELSCOPE_TRANSCRIPTION_WORKERS:-1}"
+      REELSCOPE_AUTO_TRANSCRIBE_MODEL: "${REELSCOPE_AUTO_TRANSCRIBE_MODEL:-whisper-turbo}"
+      REELSCOPE_ALLOW_REGISTRATION: "${REELSCOPE_ALLOW_REGISTRATION:-0}"
+      REELSCOPE_SECURE_COOKIES: "${REELSCOPE_SECURE_COOKIES:-0}"
+      REELSCOPE_HSTS: "${REELSCOPE_HSTS:-0}"
+      REELSCOPE_PROXY_HOPS: "${REELSCOPE_PROXY_HOPS:-0}"
+      REELSCOPE_TRUSTED_HOSTS: "${REELSCOPE_TRUSTED_HOSTS:-localhost,127.0.0.1}"
+    ports:
+      - "127.0.0.1:${REELSCOPE_HOST_PORT:-8002}:8000"
+    volumes:
+      - reelscope-data:/data
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,size=512m,mode=1777
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=5).read()"
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+volumes:
+  reelscope-data:

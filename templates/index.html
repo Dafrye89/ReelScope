@@ -19,7 +19,7 @@
 
         <button class="project-chip" type="button" aria-label="Current workspace">
           <span class="material-symbols-rounded" aria-hidden="true">folder</span>
-          <span>Local workspace</span>
+          <span>{{ user.username }}'s workspace</span>
         </button>
 
         <label class="search-box" for="jobSearch">
@@ -29,8 +29,8 @@
         </label>
 
         <div class="top-actions">
-          <button class="icon-button mobile-only" id="historyToggle" type="button" aria-label="Show history">
-            <span class="material-symbols-rounded" aria-hidden="true">history</span>
+          <button class="icon-button mobile-only" id="historyToggle" type="button" aria-label="Open menu" aria-controls="historyPanel" aria-expanded="false">
+            <span class="material-symbols-rounded" aria-hidden="true">menu</span>
           </button>
           <button class="icon-button" id="themeToggle" type="button" aria-label="Switch to light mode">
             <span class="material-symbols-rounded theme-icon-dark" aria-hidden="true">light_mode</span>
@@ -40,6 +40,15 @@
             <span class="material-symbols-rounded" aria-hidden="true">upload</span>
             <span>Import video</span>
           </button>
+          <form class="account-form desktop-only" method="post" action="/logout">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}" />
+            <button class="account-chip" type="submit" aria-label="Log out {{ user.username }}" title="Log out">
+              <span class="material-symbols-rounded" aria-hidden="true">settings</span>
+              <span>{{ user.username }}</span>
+              {% if user.is_admin %}<span class="admin-tag">Admin</span>{% endif %}
+              <span class="material-symbols-rounded logout-icon" aria-hidden="true">chevron_right</span>
+            </button>
+          </form>
           <button class="icon-button mobile-only" id="inspectorToggle" type="button" aria-label="Show extraction settings">
             <span class="material-symbols-rounded" aria-hidden="true">tune</span>
           </button>
@@ -72,6 +81,36 @@
             <button class="icon-button compact" id="newJobButton" type="button" aria-label="Import a new video">
               <span class="material-symbols-rounded" aria-hidden="true">add</span>
             </button>
+          </div>
+          <div class="mobile-menu-tools" aria-label="Mobile workspace menu">
+            <div class="mobile-mode-switcher" role="group" aria-label="View mode">
+              <button class="mobile-menu-button is-active" id="mobileCarouselView" type="button" aria-pressed="true">
+                <span class="material-symbols-rounded" aria-hidden="true">view_carousel</span>
+                Frames
+              </button>
+              <button class="mobile-menu-button" id="mobileVideoView" type="button" aria-pressed="false">
+                <span class="material-symbols-rounded" aria-hidden="true">play_arrow</span>
+                Video
+              </button>
+              <button class="mobile-menu-button" id="mobileGridView" type="button" aria-pressed="false">
+                <span class="material-symbols-rounded" aria-hidden="true">grid_view</span>
+                Grid
+              </button>
+            </div>
+            <div class="mobile-menu-actions">
+              <button class="mobile-menu-button" id="mobileImportButton" type="button">
+                <span class="material-symbols-rounded" aria-hidden="true">upload</span>
+                Import video
+              </button>
+              <button class="mobile-menu-button" id="mobileInspectorButton" type="button">
+                <span class="material-symbols-rounded" aria-hidden="true">tune</span>
+                Settings &amp; exports
+              </button>
+              <button class="mobile-menu-button" id="mobileThemeButton" type="button">
+                <span class="material-symbols-rounded" aria-hidden="true">contrast</span>
+                Toggle theme
+              </button>
+            </div>
           </div>
           <div class="history-summary">
             <span id="historyCount">0 saved jobs</span>
@@ -109,6 +148,9 @@
               <button class="icon-button is-active" id="carouselViewButton" type="button" aria-label="Carousel view" aria-pressed="true">
                 <span class="material-symbols-rounded" aria-hidden="true">view_carousel</span>
               </button>
+              <button class="icon-button" id="videoViewButton" type="button" aria-label="Original video" aria-pressed="false">
+                <span class="material-symbols-rounded" aria-hidden="true">play_arrow</span>
+              </button>
               <button class="icon-button" id="gridViewButton" type="button" aria-label="Grid view" aria-pressed="false">
                 <span class="material-symbols-rounded" aria-hidden="true">grid_view</span>
               </button>
@@ -143,6 +185,9 @@
               </figure>
               <figure class="primary-frame" id="primaryCard">
                 <img id="primaryImage" alt="Current extracted frame" />
+                <button class="media-overlay-button frame-download-overlay" id="downloadFrameOverlay" type="button" aria-label="Download current frame as PNG" disabled>
+                  <span class="material-symbols-rounded" aria-hidden="true">download</span>
+                </button>
                 <figcaption id="timestampPill">00:00:00.000</figcaption>
               </figure>
               <figure class="neighbor-frame" id="nextCard">
@@ -151,7 +196,40 @@
               <button class="stage-arrow stage-arrow-right" id="nextFrame" type="button" aria-label="Next frame">
                 <span class="material-symbols-rounded" aria-hidden="true">chevron_right</span>
               </button>
+              <figure class="video-frame is-hidden" id="videoCard">
+                <video id="sourceVideo" controls playsinline preload="metadata"></video>
+                <figcaption><span class="material-symbols-rounded" aria-hidden="true">refresh</span><span id="videoSyncText">Frames follow video playback</span></figcaption>
+              </figure>
             </div>
+
+            <section class="transcript-workspace is-hidden" id="transcriptWorkspace" aria-label="Word-timed transcript">
+              <div class="transcript-heading">
+                <div class="transcript-title">
+                  <strong>Live transcript</strong>
+                  <span class="live-transcript-badge"><span class="status-dot"></span>Live</span>
+                  <span class="transcript-count" id="transcriptCueCount">0 words</span>
+                </div>
+                <div class="transcript-actions">
+                  <button class="secondary-button compact-button" id="copyTranscript" type="button">
+                    <span class="material-symbols-rounded" aria-hidden="true">content_copy</span>
+                    <span class="copy-label">Copy</span>
+                  </button>
+                  <a class="secondary-button compact-button is-hidden" id="downloadTranscriptOverlay" href="#" download aria-label="Download SRT transcript">
+                    <span class="material-symbols-rounded" aria-hidden="true">download</span>
+                    <span class="download-label">SRT</span>
+                  </a>
+                  <button class="secondary-button compact-button" id="saveTranscript" type="button" disabled>
+                    <span class="material-symbols-rounded" aria-hidden="true">check_circle</span>
+                    <span class="save-label">Save</span>
+                  </button>
+                </div>
+              </div>
+              <div class="transcript-cues" id="transcriptCues" aria-label="Editable live transcript"></div>
+              <div class="transcript-save-row">
+                <span>Click a timestamp to seek. Select any word to correct it.</span>
+                <span id="transcriptSaveState">Saved</span>
+              </div>
+            </section>
 
             <div class="timeline-block">
               <div class="timeline-labels">
@@ -195,12 +273,166 @@
           </section>
 
           <section class="grid-view is-hidden" id="gridView" aria-label="Frame grid">
+            <div class="grid-selection-bar" id="gridSelectionBar" aria-live="polite">
+              <span><strong id="gridSelectionCount">0</strong> selected</span>
+              <button class="primary-button" id="downloadSelectedFrames" type="button">
+                <span class="material-symbols-rounded" aria-hidden="true">download</span>
+                <span>Download selected</span>
+              </button>
+              <button class="icon-button" id="clearSelectedFrames" type="button" aria-label="Clear selected frames">
+                <span class="material-symbols-rounded" aria-hidden="true">close</span>
+              </button>
+            </div>
             <div class="frame-grid" id="frameGrid"></div>
             <button class="secondary-button load-more is-hidden" id="loadMoreFrames" type="button">Load more frames</button>
           </section>
         </main>
 
         <aside class="inspector-panel" id="inspectorPanel" aria-label="Extraction settings and exports">
+          <section class="inspector-section">
+            <div class="section-heading">
+              <div>
+                <p class="eyebrow">Speech-to-text</p>
+                <h2>Transcription</h2>
+              </div>
+            </div>
+            <label class="field-label" for="transcriptionProvider">Provider</label>
+            <select id="transcriptionProvider">
+              <option value="local" selected>Local PC · private and free</option>
+              <option value="elevenlabs">ElevenLabs · cloud API</option>
+            </select>
+
+            <div id="localTranscriptionSettings">
+              <label class="field-label" for="transcriptionModel">Local model</label>
+              <select id="transcriptionModel">
+                {% for model in transcription_models %}
+                <option value="{{ model.key }}" {% if model.key == 'whisper-turbo' %}selected{% endif %}>{{ model.label }}</option>
+                {% endfor %}
+              </select>
+              <p class="field-help" id="transcriptionModelHelp">Recommended multilingual balance of speed and accuracy.</p>
+              <label class="field-label" for="transcriptionLanguage">Language</label>
+              <select id="transcriptionLanguage">
+                <option value="auto" selected>Detect automatically</option>
+                <option value="en">English</option>
+              </select>
+            </div>
+
+            <div class="provider-settings is-hidden" id="elevenLabsSettings">
+              <label class="field-label" for="elevenLabsApiKey">API key</label>
+              <div class="credential-row">
+                <input id="elevenLabsApiKey" type="password" maxlength="256" autocomplete="off" placeholder="Paste a new ElevenLabs key" />
+                <button class="icon-button" id="removeElevenLabsKey" type="button" aria-label="Remove saved ElevenLabs API key" disabled>
+                  <span class="material-symbols-rounded" aria-hidden="true">close</span>
+                </button>
+              </div>
+              <p class="field-help" id="elevenLabsKeyStatus">No key saved. Keys are encrypted on this ReelScope server and are never returned to the browser.</p>
+
+              <label class="field-label" for="elevenLabsModel">ElevenLabs model</label>
+              <select id="elevenLabsModel">
+                {% for model in elevenlabs_models %}
+                <option value="{{ model.id }}" {% if model.id == 'scribe_v2' %}selected{% endif %}>{{ model.label }}</option>
+                {% endfor %}
+              </select>
+              <p class="field-help" id="elevenLabsModelHelp">Newest batch model with keyterms, entities, speaker tools, and 90+ languages.</p>
+
+              <label class="field-label" for="elevenLabsLanguage">Language hint</label>
+              <input id="elevenLabsLanguage" type="text" maxlength="4" value="auto" placeholder="auto, en, or eng" />
+              <p class="field-help">Use auto or any ISO-639-1/3 code supported by Scribe.</p>
+
+              <details class="advanced-settings" id="elevenLabsAdvanced">
+                <summary>All ElevenLabs options</summary>
+                <div class="advanced-settings-body">
+                  <label class="field-label" for="elevenLabsTimestamps">Timestamp detail</label>
+                  <select id="elevenLabsTimestamps">
+                    <option value="word" selected>Word</option>
+                    <option value="character">Character</option>
+                    <option value="none" disabled>None · unavailable because ReelScope highlights words</option>
+                  </select>
+
+                  <div class="toggle-stack">
+                    <label><input id="elevenLabsAudioEvents" type="checkbox" checked /> Tag audio events</label>
+                    <label><input id="elevenLabsNoVerbatim" type="checkbox" /> Remove fillers and false starts <span class="cost-note">Scribe v2</span></label>
+                    <label><input id="elevenLabsDiarize" type="checkbox" /> Speaker diarization</label>
+                    <label><input id="elevenLabsSpeakerLabels" type="checkbox" /> Add speaker labels to ReelScope SRT</label>
+                    <label><input id="elevenLabsSpeakerLibrary" type="checkbox" /> Match saved speaker library</label>
+                    <label><input id="elevenLabsSpeakerRoles" type="checkbox" /> Detect agent/customer roles <span class="cost-note">+10%</span></label>
+                    <label><input id="elevenLabsMultiChannel" type="checkbox" /> Multi-channel audio <span class="cost-note">billed per channel</span></label>
+                    <label><input id="elevenLabsLogging" type="checkbox" checked /> ElevenLabs logging <span class="cost-note">turn off for Enterprise zero retention</span></label>
+                  </div>
+
+                  <div class="settings-pair">
+                    <label>Speakers <input id="elevenLabsNumSpeakers" type="number" min="1" max="32" placeholder="Auto" /></label>
+                    <label>Diarization threshold <input id="elevenLabsDiarizationThreshold" type="number" min="0.1" max="0.4" step="0.01" placeholder="Auto · usually 0.22" /></label>
+                  </div>
+                  <label class="field-label" for="elevenLabsMultiChannelStyle">Multi-channel output</label>
+                  <select id="elevenLabsMultiChannelStyle">
+                    <option value="combined" selected>Combined and time-sorted</option>
+                    <option value="separate">Separate channels, merged by ReelScope</option>
+                  </select>
+
+                  <div class="settings-pair">
+                    <label>Temperature <input id="elevenLabsTemperature" type="number" min="0" max="2" step="0.1" placeholder="Model default" /></label>
+                    <label>Seed <input id="elevenLabsSeed" type="number" min="0" max="2147483647" step="1" placeholder="Optional" /></label>
+                  </div>
+
+                  <label class="field-label" for="elevenLabsKeyterms">Keyterms <span class="cost-note">up to 1,000 · +20%</span></label>
+                  <textarea id="elevenLabsKeyterms" rows="3" placeholder="One term per line: ReelScope&#10;product name&#10;person name"></textarea>
+
+                  <label class="field-label" for="elevenLabsEntityDetection">Entity detection <span class="cost-note">+30%</span></label>
+                  <textarea id="elevenLabsEntityDetection" rows="2" placeholder="all, pii, phi, pci, other, offensive_language, or exact entity types"></textarea>
+                  <label class="field-label" for="elevenLabsEntityRedaction">Entity redaction <span class="cost-note">+30%</span></label>
+                  <textarea id="elevenLabsEntityRedaction" rows="2" placeholder="Must be a subset of entity detection"></textarea>
+                  <label class="field-label" for="elevenLabsRedactionMode">Redaction style</label>
+                  <select id="elevenLabsRedactionMode">
+                    <option value="enumerated_entity_type" selected>{ENTITY_TYPE_1}</option>
+                    <option value="entity_type">{ENTITY_TYPE}</option>
+                    <option value="redacted">{REDACTED}</option>
+                  </select>
+
+                  <fieldset class="format-options">
+                    <legend>Additional ElevenLabs exports</legend>
+                    {% for format in ['docx', 'html', 'pdf', 'srt', 'txt', 'segmented_json'] %}
+                    <label><input type="checkbox" name="elevenLabsFormat" value="{{ format }}" /> {{ format|upper }}</label>
+                    {% endfor %}
+                  </fieldset>
+                  <div class="toggle-stack compact-toggles">
+                    <label><input id="elevenLabsExportSpeakers" type="checkbox" checked /> Export speaker labels</label>
+                    <label><input id="elevenLabsExportTimestamps" type="checkbox" checked /> Export timestamps</label>
+                  </div>
+                  <div class="settings-pair export-settings">
+                    <label>Split silence (s) <input id="elevenLabsExportSilence" type="number" min="0" step="0.1" placeholder="Default" /></label>
+                    <label>Max segment (s) <input id="elevenLabsExportDuration" type="number" min="0.1" step="0.1" placeholder="Default" /></label>
+                    <label>Max segment chars <input id="elevenLabsExportChars" type="number" min="1" step="1" placeholder="Default" /></label>
+                    <label>Max line chars <input id="elevenLabsExportLineChars" type="number" min="1" step="1" placeholder="SRT/TXT default" /></label>
+                  </div>
+                  <p class="field-help">ReelScope always sends the owned original upload synchronously. URL, webhook, single-use token, and raw PCM modes are managed by the app rather than exposed here.</p>
+                </div>
+              </details>
+            </div>
+
+            <div class="auto-transcription-note">
+              <span class="status-dot"></span>
+              Saved provider runs automatically after every new upload
+            </div>
+            <button class="secondary-button full-width provider-save-button" id="saveTranscriptionSettings" type="button">
+              <span class="material-symbols-rounded" aria-hidden="true">check_circle</span>
+              Save provider settings
+            </button>
+            <button class="primary-button full-width transcribe-button" id="transcribeButton" type="button" disabled>
+              <span class="material-symbols-rounded" aria-hidden="true">video_library</span>
+              Generate SRT
+            </button>
+            <div class="transcription-status" id="transcriptionStatus" aria-live="polite">
+              <span class="status-dot"></span>
+              <span id="transcriptionStatusText">Choose a completed video to transcribe.</span>
+            </div>
+            <a class="secondary-button full-width is-hidden" id="downloadTranscript" href="#" download>
+              <span class="material-symbols-rounded" aria-hidden="true">download</span>
+              Download SRT
+            </a>
+            <div class="transcript-export-links is-hidden" id="transcriptExportLinks"></div>
+          </section>
+
           <section class="inspector-section">
             <div class="section-heading">
               <div>
@@ -289,10 +521,14 @@
     <div class="drawer-backdrop is-hidden" id="drawerBackdrop"></div>
     <div class="toast-region" id="toastRegion" aria-live="polite" aria-atomic="true"></div>
 
-    <script>
+    <script nonce="{{ csp_nonce }}">
       window.REELSCOPE_CONFIG = {
         engine: {{ engine_label|tojson }},
-        maxUpload: {{ max_upload_label|tojson }}
+        maxUpload: {{ max_upload_label|tojson }},
+        csrfToken: {{ csrf_token()|tojson }},
+        user: {{ user.as_dict()|tojson }},
+        transcriptionModels: {{ transcription_models|tojson }},
+        elevenlabsModels: {{ elevenlabs_models|tojson }}
       };
     </script>
     <script src="/assets/reelscope.js" defer></script>

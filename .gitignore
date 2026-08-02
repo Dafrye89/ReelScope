@@ -1,4 +1,5 @@
 .venv/
+.env
 web_data/
 web_data_cuda/
 __pycache__/
@@ -13,7 +14,17 @@ build/
 dist/
 *.spec
 *.lnk
+*.sqlite3
+*.sqlite3-shm
+*.sqlite3-wal
+.session_key
+.credential_key
+models/
+*.srt
 .pytest_cache/
 design/
 design-qa.md
 docs/qa/
+.codex-remote-attachments/
+*.log
+*.err

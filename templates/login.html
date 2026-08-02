@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#07111f" />
+    <title>Sign in · ReelScope</title>
+    <link rel="icon" type="image/png" href="/assets/reelscope-icon-64.png" />
+    <link rel="stylesheet" href="/assets/reelscope.css" />
+  </head>
+  <body class="auth-page">
+    <main class="auth-shell">
+      <section class="auth-brand" aria-label="ReelScope">
+        <img src="/assets/reelscope-icon-256.png" alt="" />
+        <p class="eyebrow">Private video workspace</p>
+        <h1>Welcome to ReelScope</h1>
+        <p>Extract, inspect, play, and transcribe video without sharing your library with other users.</p>
+      </section>
+      <section class="auth-card">
+        <div>
+          <p class="eyebrow">Account</p>
+          <h2>Sign in</h2>
+          <p class="auth-intro">Your videos and frames are visible only to your account.</p>
+        </div>
+        {% if error %}<div class="auth-error" role="alert">{{ error }}</div>{% endif %}
+        <form method="post" class="auth-form">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}" />
+          <input type="hidden" name="next" value="{{ next }}" />
+          <label for="username">Username</label>
+          <input id="username" name="username" value="{{ username }}" minlength="3" maxlength="32" autocomplete="username" required autofocus />
+          <label for="password">Password</label>
+          <input id="password" name="password" type="password" minlength="8" maxlength="128" autocomplete="current-password" required />
+          <button class="primary-button full-width auth-submit" type="submit">Sign in</button>
+        </form>
+        {% if registration_allowed %}
+          <p class="auth-switch">New here? <a href="/register">Create an account</a></p>
+        {% endif %}
+      </section>
+    </main>
+  </body>
+</html>

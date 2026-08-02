@@ -31,6 +31,9 @@ try {
         --add-data "${templates}:templates" `
         --add-data "${assets}:assets" `
         --collect-all webview `
+        --collect-all faster_whisper `
+        --collect-all ctranslate2 `
+        --collect-all av `
         --hidden-import webview.platforms.edgechromium `
         $entrypoint
     if ($LASTEXITCODE -ne 0) {
